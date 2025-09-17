@@ -9,10 +9,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
     private var overlayDisplay: NSScreen?
     private var hotKeyRef: EventHotKeyRef?
     private var eventHandlerRef: EventHandlerRef?
+    private var markupEditor: MarkupEditorController? // Add strong reference
     
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory) // LSUIElement should already enforce no Dock icon
+        NSApp.setActivationPolicy(.accessory)
         setupStatusBar()
+        registerGlobalHotKey()
     }
     
     private func setupStatusBar() {
@@ -20,27 +22,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
         if let button = statusItem.button {
             button.image = NSImage(systemSymbolName: "target", accessibilityDescription: "VibeShot")
         }
+        
         let menu = NSMenu()
-    // Capture item (shortcut will appear to the right automatically)
-    let captureItem = NSMenuItem(title: "Capture Region", action: #selector(startRegionCapture), keyEquivalent: "s")
+        
+        // Capture item
+        let captureItem = NSMenuItem(title: "Capture Region", action: #selector(startRegionCapture), keyEquivalent: "s")
         captureItem.keyEquivalentModifierMask = [.option, .control, .shift]
         menu.addItem(captureItem)
+        
         menu.addItem(withTitle: "Test Capture (Center 400x300)", action: #selector(testCapture), keyEquivalent: "")
+        
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "About VibeShot", action: #selector(showAbout), keyEquivalent: "")
         menu.addItem(withTitle: "Diagnostics", action: #selector(showDiagnostics), keyEquivalent: "")
-
+        
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit", action: #selector(quit), keyEquivalent: "q")
+        
         menu.items.forEach { $0.target = self }
         statusItem.menu = menu
-
-        registerGlobalHotKey()
     }
-
+    
     // MARK: Region Capture Flow
     @objc private func startRegionCapture() {
-        guard overlayController == nil else { return } // already active
+        guard overlayController == nil else { return }
         let mouseLoc = NSEvent.mouseLocation
-        // Determine display under mouse
         guard let display = NSScreen.screens.first(where: { $0.frame.contains(mouseLoc) }) ?? NSScreen.main else {
             return
         }
@@ -50,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
         overlayController = controller
         controller.begin()
     }
-
+    
     func overlayDidFinish(rect: CGRect?) {
         guard let rect = rect, let display = overlayDisplay else {
             overlayController = nil; overlayDisplay = nil; return
@@ -64,10 +70,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
                 let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.writeObjects([result.image])
-                let variance = approximateVariance(of: result.image)
-                showPreviewWindow(image: result.image,
-                                  info: "\(Int(result.image.size.width))×\(Int(result.image.size.height))\n~\(Int(elapsed)) ms\nVar: \(String(format: "%.3f", variance))")
-                NSLog("[RegionCapture] SUCCESS rect=\(NSStringFromRect(rect)) elapsedMs=\(Int(elapsed)) variance=\(variance)")
+                
+                // Open markup editor and keep strong reference to prevent deallocation
+                let editor = MarkupEditorController(baseImage: result.image)
+                self.markupEditor = editor // Keep strong reference
+                editor.show()
+                
+                NSLog("[RegionCapture] SUCCESS rect=\(NSStringFromRect(rect)) elapsedMs=\(Int(elapsed))")
             } catch {
                 showTransientAlert(title: "Capture Failed", text: error.localizedDescription)
                 NSLog("[RegionCapture] FAILURE: \(error)")
@@ -81,10 +90,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
                 let start = CFAbsoluteTimeGetCurrent()
                 let result = try await captureService.captureCentralRectOnActiveDisplay()
                 let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
-
+                
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.writeObjects([result.image])
-
+                
                 let variance = approximateVariance(of: result.image)
                 showPreviewWindow(image: result.image,
                                   info: "400×300\n~\(Int(elapsed)) ms\nVar: \(String(format: "%.3f", variance))")
@@ -96,12 +105,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
         }
     }
     
+    @objc private func showAbout() {
+        let alert = NSAlert()
+        alert.messageText = "About VibeShot"
+        alert.informativeText = """
+VibeShot v1.0
+A lightweight, fast screenshot & markup utility
+
+Copyright © 2025. All rights reserved.
+
+Attribution Placeholder:
+• ScreenCaptureKit framework
+• SwiftUI framework
+• Additional dependencies TBD
+"""
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+    
     @objc private func showDiagnostics() {
         let preflight = CGPreflightScreenCaptureAccess()
         let alert = NSAlert()
         alert.messageText = "Diagnostics"
         alert.informativeText = """
 Bundle: \(Bundle.main.bundleIdentifier ?? "N/A")
+Version: \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown")
+Build: \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown")
 ScreenRecordingPreflight: \(preflight)
 SCKitAvailable: \(screenCaptureKitAvailable ? "yes" : "no")
 """
@@ -121,15 +150,15 @@ SCKitAvailable: \(screenCaptureKitAvailable ? "yes" : "no")
     }
     
     @objc private func quit() { NSApp.terminate(nil) }
-
+    
     // MARK: - HotKey
     private func registerGlobalHotKey() {
         // Option + Control + Shift + S
         let keyCode: UInt32 = UInt32(kVK_ANSI_S)
         let modifiers: UInt32 = UInt32(optionKey | controlKey | shiftKey)
-
+        
         var eventTypeSpec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-
+        
         let handler: EventHandlerUPP = { (nextHandler, theEvent, userData) -> OSStatus in
             var hotKeyID = EventHotKeyID()
             GetEventParameter(theEvent, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKeyID)
@@ -140,23 +169,23 @@ SCKitAvailable: \(screenCaptureKitAvailable ? "yes" : "no")
             }
             return noErr
         }
-
+        
         // Install handler once
         if eventHandlerRef == nil {
             let status = InstallEventHandler(GetApplicationEventTarget(), handler, 1, &eventTypeSpec, UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()), &eventHandlerRef)
             if status != noErr { NSLog("[HotKey] Failed to install handler status=\(status)") }
         }
-
+        
         let hotKeyID = EventHotKeyID(signature: OSType(UInt32(truncatingIfNeeded: 0x56534254)), id: 1) // 'VSBT'
         let status = RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
         if status != noErr { NSLog("[HotKey] Failed to register hotkey status=\(status)") }
     }
-
+    
     private func unregisterHotKey() {
         if let hk = hotKeyRef { UnregisterEventHotKey(hk); hotKeyRef = nil }
         if let handler = eventHandlerRef { RemoveEventHandler(handler); eventHandlerRef = nil }
     }
-
+    
     func applicationWillTerminate(_ notification: Notification) {
         unregisterHotKey()
     }
@@ -177,28 +206,28 @@ private extension AppDelegate {
             w.isReleasedWhenClosed = false
             previewWindow = w
         }
-
+        
         let scaled = thumbnail(of: image, max: 220)
         let container = NSView(frame: NSRect(x: 0, y: 0, width: contentSize.width, height: contentSize.height))
-
+        
         let imageView = NSImageView(frame: NSRect(x: 20, y: 60, width: 220, height: 160))
         imageView.image = scaled
         imageView.imageScaling = .scaleProportionallyUpOrDown
         container.addSubview(imageView)
-
+        
         let label = NSTextField(labelWithString: info)
         label.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
         label.textColor = .secondaryLabelColor
         label.alignment = .center
         label.frame = NSRect(x: 20, y: 20, width: 220, height: 30)
         container.addSubview(label)
-
+        
         previewWindow?.contentView = container
         previewWindow?.center()
         previewWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
-
+    
     func thumbnail(of image: NSImage, max: CGFloat) -> NSImage {
         let ratio = min(max / image.size.width, max / image.size.height)
         let target = NSSize(width: image.size.width * ratio, height: image.size.height * ratio)
@@ -211,7 +240,7 @@ private extension AppDelegate {
         thumb.unlockFocus()
         return thumb
     }
-
+    
     func approximateVariance(of image: NSImage) -> Double {
         guard let tiff = image.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff) else { return 0 }
