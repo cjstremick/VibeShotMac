@@ -118,9 +118,12 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         switch currentTool {
         case .selection:
             handleSelectionAt(point)
-        case .arrow:
+        case .arrow, .rectangle:
             // Will handle in canvasDidFinishDrawing
             break
+        case .stepCounter:
+            // Handle step counter immediately on click
+            handleStepCounterStamp(at: point)
         }
     }
     
@@ -146,6 +149,26 @@ extension MarkupEditorController: MarkupCanvasDelegate {
             // Update the canvas view's elements
             canvasView.markupElements = markupElements
             canvasView.needsDisplay = true
+        case .rectangle:
+            // Calculate minimum rectangle size
+            let width = abs(endPoint.x - startPoint.x)
+            let height = abs(endPoint.y - startPoint.y)
+            let minimumSize: CGFloat = 20.0
+            
+            // Skip creating rectangle if it's too small
+            guard width >= minimumSize && height >= minimumSize else {
+                return
+            }
+            
+            let rectangle = RectangleElement(startPoint: startPoint, endPoint: endPoint)
+            markupElements.append(rectangle)
+            
+            // Update the canvas view's elements
+            canvasView.markupElements = markupElements
+            canvasView.needsDisplay = true
+        case .stepCounter:
+            // Already handled in canvasDidStartDrawing
+            break
         }
     }
     
@@ -172,6 +195,24 @@ extension MarkupEditorController: MarkupCanvasDelegate {
             }
         }
         
+        canvasView.needsDisplay = true
+    }
+    
+    private func handleStepCounterStamp(at point: CGPoint) {
+        // Calculate the next step number based on existing step counter elements
+        let existingStepNumbers = markupElements.compactMap { element in
+            return (element as? StepCounterElement)?.stepNumber
+        }
+        
+        // Find the highest existing number and add 1
+        let nextStepNumber = (existingStepNumbers.max() ?? 0) + 1
+        
+        // Create the new step counter element
+        let stepCounter = StepCounterElement(centerPoint: point, stepNumber: nextStepNumber)
+        markupElements.append(stepCounter)
+        
+        // Update the canvas view's elements
+        canvasView.markupElements = markupElements
         canvasView.needsDisplay = true
     }
     
@@ -329,6 +370,11 @@ final class MarkupCanvasView: NSView {
                 drawPreviewArrow(from: startPoint, to: endPoint, in: context)
             case .selection:
                 drawSelectionRect(from: startPoint, to: endPoint, in: context)
+            case .rectangle:
+                drawRectanglePreview(from: startPoint, to: endPoint, in: context)
+            case .stepCounter:
+                // No preview needed for step counter (instant click action)
+                break
             }
         }
     }
@@ -401,6 +447,34 @@ final class MarkupCanvasView: NSView {
         
         context.fill(rect)
         context.stroke(rect)
+        
+        context.restoreGState()
+    }
+    
+    private func drawRectanglePreview(from startPoint: CGPoint, to endPoint: CGPoint, in context: CGContext) {
+        context.saveGState()
+        
+        let rect = CGRect(
+            x: min(startPoint.x, endPoint.x),
+            y: min(startPoint.y, endPoint.y),
+            width: abs(endPoint.x - startPoint.x),
+            height: abs(endPoint.y - startPoint.y)
+        )
+        
+        let color = NSColor(red: 0.847, green: 0.106, blue: 0.376, alpha: 0.7) // Semi-transparent preview using same color as arrows
+        let lineWidth: CGFloat = 6.0
+        let cornerRadius: CGFloat = 8.0
+        
+        // Set line properties
+        context.setStrokeColor(color.cgColor)
+        context.setLineWidth(lineWidth)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        
+        // Draw rounded rectangle preview
+        let path = CGPath(roundedRect: rect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+        context.addPath(path)
+        context.strokePath()
         
         context.restoreGState()
     }
