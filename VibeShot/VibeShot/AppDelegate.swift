@@ -30,8 +30,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
         captureItem.keyEquivalentModifierMask = [.option, .control, .shift]
         menu.addItem(captureItem)
         
-        menu.addItem(withTitle: "Test Capture (Center 400x300)", action: #selector(testCapture), keyEquivalent: "")
-        
         menu.addItem(.separator())
         menu.addItem(withTitle: "About VibeShot", action: #selector(showAbout), keyEquivalent: "")
         menu.addItem(withTitle: "Diagnostics", action: #selector(showDiagnostics), keyEquivalent: "")
@@ -80,27 +78,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
             } catch {
                 showTransientAlert(title: "Capture Failed", text: error.localizedDescription)
                 NSLog("[RegionCapture] FAILURE: \(error)")
-            }
-        }
-    }
-    
-    @objc private func testCapture() {
-        Task { @MainActor in
-            do {
-                let start = CFAbsoluteTimeGetCurrent()
-                let result = try await captureService.captureCentralRectOnActiveDisplay()
-                let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
-                
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.writeObjects([result.image])
-                
-                let variance = approximateVariance(of: result.image)
-                showPreviewWindow(image: result.image,
-                                  info: "400×300\n~\(Int(elapsed)) ms\nVar: \(String(format: "%.3f", variance))")
-                NSLog("[QuickCapture] SUCCESS size=\(result.image.size) elapsedMs=\(Int(elapsed)) variance=\(variance)")
-            } catch {
-                showTransientAlert(title: "Capture Failed", text: error.localizedDescription)
-                NSLog("[QuickCapture] FAILURE: \(error)")
             }
         }
     }
@@ -184,81 +161,5 @@ SCKitAvailable: \(screenCaptureKitAvailable ? "yes" : "no")
     private func unregisterHotKey() {
         if let hk = hotKeyRef { UnregisterEventHotKey(hk); hotKeyRef = nil }
         if let handler = eventHandlerRef { RemoveEventHandler(handler); eventHandlerRef = nil }
-    }
-    
-    func applicationWillTerminate(_ notification: Notification) {
-        unregisterHotKey()
-    }
-}
-
-// MARK: - Preview + Diagnostics Helpers
-private var previewWindow: NSWindow?
-
-private extension AppDelegate {
-    func showPreviewWindow(image: NSImage, info: String) {
-        let contentSize = NSSize(width: 260, height: 260)
-        if previewWindow == nil {
-            let w = NSWindow(contentRect: NSRect(origin: .zero, size: contentSize),
-                             styleMask: [.titled, .closable, .utilityWindow],
-                             backing: .buffered,
-                             defer: false)
-            w.title = "Last Capture"
-            w.isReleasedWhenClosed = false
-            previewWindow = w
-        }
-        
-        let scaled = thumbnail(of: image, max: 220)
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: contentSize.width, height: contentSize.height))
-        
-        let imageView = NSImageView(frame: NSRect(x: 20, y: 60, width: 220, height: 160))
-        imageView.image = scaled
-        imageView.imageScaling = .scaleProportionallyUpOrDown
-        container.addSubview(imageView)
-        
-        let label = NSTextField(labelWithString: info)
-        label.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
-        label.textColor = .secondaryLabelColor
-        label.alignment = .center
-        label.frame = NSRect(x: 20, y: 20, width: 220, height: 30)
-        container.addSubview(label)
-        
-        previewWindow?.contentView = container
-        previewWindow?.center()
-        previewWindow?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-    
-    func thumbnail(of image: NSImage, max: CGFloat) -> NSImage {
-        let ratio = min(max / image.size.width, max / image.size.height)
-        let target = NSSize(width: image.size.width * ratio, height: image.size.height * ratio)
-        let thumb = NSImage(size: target)
-        thumb.lockFocus()
-        image.draw(in: NSRect(origin: .zero, size: target),
-                   from: NSRect(origin: .zero, size: image.size),
-                   operation: .copy,
-                   fraction: 1.0)
-        thumb.unlockFocus()
-        return thumb
-    }
-    
-    func approximateVariance(of image: NSImage) -> Double {
-        guard let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff) else { return 0 }
-        var samples: [Double] = []
-        for y in 0..<3 {
-            for x in 0..<3 {
-                let px = Int(Double(rep.pixelsWide - 1) * (Double(x) / 2.0))
-                let py = Int(Double(rep.pixelsHigh - 1) * (Double(y) / 2.0))
-                guard let color = rep.colorAt(x: px, y: py) else { continue }
-                let r = Double(color.redComponent)
-                let g = Double(color.greenComponent)
-                let b = Double(color.blueComponent)
-                samples.append((r + g + b) / 3.0)
-            }
-        }
-        guard !samples.isEmpty else { return 0 }
-        let mean = samples.reduce(0, +) / Double(samples.count)
-        let variance = samples.reduce(0) { $0 + pow($1 - mean, 2) } / Double(samples.count)
-        return variance
     }
 }

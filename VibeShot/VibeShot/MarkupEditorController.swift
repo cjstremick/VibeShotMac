@@ -280,29 +280,24 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         
         composite.lockFocus()
         
-        // Draw base image first in the normal coordinate system
+        // Draw base image first
         baseImage.draw(in: NSRect(origin: .zero, size: size))
         
-        // Get the current graphics context and flip it only for markup elements
+        // Get the current graphics context
         guard let context = NSGraphicsContext.current?.cgContext else {
             composite.unlockFocus()
             return composite
         }
         
-        // Save the current state before transformation
-        context.saveGState()
-        
-        // Flip the coordinate system to match the canvas view (top-left origin) for markup elements only
+        // Transform the coordinate system to match the flipped canvas view
+        // The canvas uses isFlipped = true (top-left origin), but NSImage uses bottom-left origin
         context.translateBy(x: 0, y: size.height)
-        context.scaleBy(x: 1.0, y: -1.0)
+        context.scaleBy(x: 1, y: -1)
         
-        // Draw markup elements with flipped coordinates
+        // Draw markup elements with the transformed coordinate system
         for element in markupElements {
             element.draw(in: context)
         }
-        
-        // Restore the original coordinate system
-        context.restoreGState()
         
         composite.unlockFocus()
         return composite

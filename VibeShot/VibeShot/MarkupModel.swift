@@ -278,7 +278,28 @@ final class StepCounterElement: MarkupElement {
             height: textSize.height
         )
         
-        attributedString.draw(in: textRect)
+        // Check if the context is transformed (flipped for copy operation)
+        let currentTransform = context.ctm
+        let isFlipped = currentTransform.d < 0 // Check if Y is flipped
+        
+        if isFlipped {
+            // We're in a flipped context (copy operation), need to flip text back
+            context.saveGState()
+            context.translateBy(x: 0, y: textRect.origin.y + textRect.height)
+            context.scaleBy(x: 1, y: -1)
+            
+            let adjustedRect = CGRect(
+                x: textRect.origin.x,
+                y: 0,
+                width: textRect.width,
+                height: textRect.height
+            )
+            attributedString.draw(in: adjustedRect)
+            context.restoreGState()
+        } else {
+            // Normal drawing (editor view)
+            attributedString.draw(in: textRect)
+        }
         
         // Draw selection indicator if selected
         if isSelected {
@@ -362,8 +383,28 @@ final class TextElement: MarkupElement {
         let displayText = text
         let attributedString = NSAttributedString(string: displayText, attributes: attributes)
         
-        // Draw the text without any background - transparent editing
-        attributedString.draw(in: bounds)
+        // Check if the context is transformed (flipped for copy operation)
+        let currentTransform = context.ctm
+        let isFlipped = currentTransform.d < 0 // Check if Y is flipped
+        
+        if isFlipped {
+            // We're in a flipped context (copy operation), need to flip text back
+            context.saveGState()
+            context.translateBy(x: 0, y: bounds.origin.y + bounds.height)
+            context.scaleBy(x: 1, y: -1)
+            
+            let adjustedBounds = CGRect(
+                x: bounds.origin.x,
+                y: 0,
+                width: bounds.width,
+                height: bounds.height
+            )
+            attributedString.draw(in: adjustedBounds)
+            context.restoreGState()
+        } else {
+            // Normal drawing (editor view)
+            attributedString.draw(in: bounds)
+        }
         
         // Draw selection indicator if selected
         if isSelected && !isBeingEdited {
