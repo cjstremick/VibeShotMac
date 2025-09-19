@@ -44,6 +44,15 @@ final class MarkupEditorController: NSWindowController {
         fatalError("init(coder:) has not been implemented")
     }
     
+    deinit {
+        // Clean up notification observers
+        NotificationCenter.default.removeObserver(
+            self,
+            name: NSColorPanel.colorDidChangeNotification,
+            object: NSColorPanel.shared
+        )
+    }
+    
     private func setupWindow() {
         guard let window = window else { return }
         
@@ -116,6 +125,14 @@ extension MarkupEditorController: MarkupToolbarDelegate {
         canvasView.setCurrentTool(tool)
         canvasView.needsDisplay = true
     }
+    
+    func toolbarDidSelectColor(_ color: NSColor) {
+        // Store the new color for future elements
+        MarkupColorManager.shared.currentColor = color
+        
+        // No need to refresh canvas - existing elements keep their colors
+        // Only new elements will use the new color
+    }
 }
 
 // MARK: - MarkupCanvasDelegate
@@ -152,7 +169,7 @@ extension MarkupEditorController: MarkupCanvasDelegate {
                 return
             }
             
-            let arrow = ArrowElement(startPoint: startPoint, endPoint: endPoint)
+            let arrow = ArrowElement(startPoint: startPoint, endPoint: endPoint, color: MarkupColorManager.shared.currentColor)
             markupElements.append(arrow)
             
             // Don't automatically select the new arrow - let user explicitly select if needed
@@ -171,7 +188,7 @@ extension MarkupEditorController: MarkupCanvasDelegate {
                 return
             }
             
-            let rectangle = RectangleElement(startPoint: startPoint, endPoint: endPoint)
+            let rectangle = RectangleElement(startPoint: startPoint, endPoint: endPoint, color: MarkupColorManager.shared.currentColor)
             markupElements.append(rectangle)
             
             // Update the canvas view's elements
@@ -239,7 +256,7 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         let nextStepNumber = (existingStepNumbers.max() ?? 0) + 1
         
         // Create the new step counter element
-        let stepCounter = StepCounterElement(centerPoint: point, stepNumber: nextStepNumber)
+        let stepCounter = StepCounterElement(centerPoint: point, stepNumber: nextStepNumber, color: MarkupColorManager.shared.currentColor)
         markupElements.append(stepCounter)
         
         // Update the canvas view's elements
@@ -453,7 +470,7 @@ final class MarkupCanvasView: NSView {
     private func drawPreviewArrow(from startPoint: CGPoint, to endPoint: CGPoint, in context: CGContext) {
         context.saveGState()
         
-        let color = NSColor(red: 0.847, green: 0.106, blue: 0.376, alpha: 0.7) // Semi-transparent preview
+        let color = MarkupColorManager.shared.currentColor.withAlphaComponent(0.7) // Semi-transparent preview
         let lineWidth: CGFloat = 6.0
         
         // Set line properties
@@ -532,7 +549,7 @@ final class MarkupCanvasView: NSView {
             height: abs(endPoint.y - startPoint.y)
         )
         
-        let color = NSColor(red: 0.847, green: 0.106, blue: 0.376, alpha: 0.7) // Semi-transparent preview using same color as arrows
+        let color = MarkupColorManager.shared.currentColor.withAlphaComponent(0.7) // Semi-transparent preview using same color as arrows
         let lineWidth: CGFloat = 6.0
         let cornerRadius: CGFloat = 8.0
         
@@ -652,7 +669,7 @@ final class MarkupCanvasView: NSView {
         
         // Create new text element
         print("🔤 Creating new text element")
-        let textElement = TextElement(position: point, text: "")
+        let textElement = TextElement(position: point, text: "", color: MarkupColorManager.shared.currentColor)
         markupElements.append(textElement)
         needsDisplay = true
         
@@ -692,7 +709,7 @@ final class MarkupCanvasView: NSView {
         newTextView.isEditable = true
         newTextView.isSelectable = true
         newTextView.drawsBackground = false  // Make background transparent
-        newTextView.textColor = NSColor(red: 0.847, green: 0.106, blue: 0.376, alpha: 1.0)
+        newTextView.textColor = MarkupColorManager.shared.currentColor
         newTextView.font = NSFont.systemFont(ofSize: 18.0, weight: .medium)
         newTextView.delegate = self
         
@@ -879,6 +896,7 @@ extension MarkupCanvasView: MarkupTextViewDelegate {
 // MARK: - Toolbar View
 protocol MarkupToolbarDelegate: AnyObject {
     func toolbarDidSelectTool(_ tool: MarkupTool)
+    func toolbarDidSelectColor(_ color: NSColor)
 }
 
 final class MarkupToolbarView: NSView {
@@ -886,6 +904,7 @@ final class MarkupToolbarView: NSView {
     
     private var selectedTool: MarkupTool = .arrow  // Match the controller's default
     private var toolButtons: [MarkupTool: NSButton] = [:]
+    private var colorButton: NSButton!
     
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -906,12 +925,24 @@ final class MarkupToolbarView: NSView {
         stackView.alignment = .centerY
         stackView.distribution = .fillProportionally
         
-        // Add tool buttons only - no copy button
+        // Add tool buttons
         for tool in MarkupTool.allCases {
             let button = createToolButton(for: tool)
             toolButtons[tool] = button
             stackView.addArrangedSubview(button)
         }
+        
+        // Add separator
+        let separator = NSView()
+        separator.wantsLayer = true
+        separator.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        separator.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        separator.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        stackView.addArrangedSubview(separator)
+        
+        // Add color picker button
+        colorButton = createColorButton()
+        stackView.addArrangedSubview(colorButton)
         
         // Add stack view to toolbar
         addSubview(stackView)
@@ -925,6 +956,7 @@ final class MarkupToolbarView: NSView {
         // Select arrow tool by default instead of selection tool
         selectedTool = .arrow
         updateToolSelection()
+        updateColorButton()
     }
     
     private func createToolButton(for tool: MarkupTool) -> NSButton {
@@ -986,5 +1018,69 @@ final class MarkupToolbarView: NSView {
                 button.contentTintColor = NSColor.controlTextColor
             }
         }
+    }
+    
+    private func createColorButton() -> NSButton {
+        let button = NSButton()
+        button.title = ""
+        button.bezelStyle = .regularSquare
+        button.setButtonType(.momentaryPushIn)
+        button.target = self
+        button.action = #selector(colorButtonPressed(_:))
+        button.toolTip = "Choose Color"
+        
+        // Set button size
+        button.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        
+        // Style the button
+        button.wantsLayer = true
+        button.layer?.cornerRadius = 4
+        button.layer?.borderWidth = 1
+        button.layer?.borderColor = NSColor.controlColor.cgColor
+        
+        return button
+    }
+    
+    @objc private func colorButtonPressed(_ sender: NSButton) {
+        // Create and show color picker
+        let colorPanel = NSColorPanel.shared
+        colorPanel.color = MarkupColorManager.shared.currentColor
+        colorPanel.isContinuous = true // Enable continuous updates for real-time color changes
+        
+        // Remove any existing observer first to avoid duplicates
+        NotificationCenter.default.removeObserver(
+            self,
+            name: NSColorPanel.colorDidChangeNotification,
+            object: colorPanel
+        )
+        
+        // Set up a notification observer for color changes
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(colorPanelColorDidChange(_:)),
+            name: NSColorPanel.colorDidChangeNotification,
+            object: colorPanel
+        )
+        
+        colorPanel.makeKeyAndOrderFront(nil)
+    }
+    
+    @objc private func colorPanelColorDidChange(_ notification: Notification) {
+        guard let colorPanel = notification.object as? NSColorPanel else { return }
+        let newColor = colorPanel.color
+        delegate?.toolbarDidSelectColor(newColor)
+        updateColorButton()
+        
+        // Don't remove observer here - let it continue listening for more color changes
+        // Observer will be removed when the view controller is deallocated or when setting up a new color panel session
+    }
+    
+    private func updateColorButton() {
+        let currentColor = MarkupColorManager.shared.currentColor
+        colorButton.layer?.backgroundColor = currentColor.cgColor
+        
+        // Add a subtle border to make the color visible even for light colors
+        colorButton.layer?.borderColor = NSColor.controlColor.cgColor
     }
 }

@@ -1,6 +1,37 @@
 import Foundation
 import Cocoa
 
+// MARK: - Color Management
+final class MarkupColorManager {
+    static let shared = MarkupColorManager()
+    
+    private let colorKey = "VibeShot.MarkupColor"
+    
+    // Default dark pink color
+    private let defaultColor = NSColor(red: 0.847, green: 0.106, blue: 0.376, alpha: 1.0)
+    
+    private init() {}
+    
+    var currentColor: NSColor {
+        get {
+            guard let colorData = UserDefaults.standard.data(forKey: colorKey),
+                  let color = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSColor.self, from: colorData) else {
+                return defaultColor
+            }
+            return color
+        }
+        set {
+            if let colorData = try? NSKeyedArchiver.archivedData(withRootObject: newValue, requiringSecureCoding: true) {
+                UserDefaults.standard.set(colorData, forKey: colorKey)
+            }
+        }
+    }
+    
+    func resetToDefault() {
+        currentColor = defaultColor
+    }
+}
+
 // MARK: - Markup Tool Types
 enum MarkupTool: CaseIterable {
     case selection
@@ -47,8 +78,8 @@ final class ArrowElement: MarkupElement {
     
     private let startPoint: CGPoint
     private let endPoint: CGPoint
-    private let color = NSColor(red: 0.847, green: 0.106, blue: 0.376, alpha: 1.0)
     private let lineWidth: CGFloat = 6.0
+    private let color: NSColor
     
     var bounds: CGRect {
         let minX = min(startPoint.x, endPoint.x) - lineWidth
@@ -58,9 +89,10 @@ final class ArrowElement: MarkupElement {
         return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
     
-    init(startPoint: CGPoint, endPoint: CGPoint) {
+    init(startPoint: CGPoint, endPoint: CGPoint, color: NSColor = MarkupColorManager.shared.currentColor) {
         self.startPoint = startPoint
         self.endPoint = endPoint
+        self.color = color
     }
     
     func draw(in context: CGContext) {
@@ -167,9 +199,9 @@ final class RectangleElement: MarkupElement {
     
     private let startPoint: CGPoint
     private let endPoint: CGPoint
-    private let color = NSColor(red: 0.847, green: 0.106, blue: 0.376, alpha: 1.0)
     private let lineWidth: CGFloat = 6.0
     private let cornerRadius: CGFloat = 8.0
+    private let color: NSColor
     
     var bounds: CGRect {
         let rect = CGRect(
@@ -181,9 +213,10 @@ final class RectangleElement: MarkupElement {
         return rect.insetBy(dx: -lineWidth/2, dy: -lineWidth/2)
     }
     
-    init(startPoint: CGPoint, endPoint: CGPoint) {
+    init(startPoint: CGPoint, endPoint: CGPoint, color: NSColor = MarkupColorManager.shared.currentColor) {
         self.startPoint = startPoint
         self.endPoint = endPoint
+        self.color = color
     }
     
     func draw(in context: CGContext) {
@@ -235,8 +268,8 @@ final class StepCounterElement: MarkupElement {
     private let centerPoint: CGPoint
     let stepNumber: Int
     private let radius: CGFloat = 20.0
-    private let backgroundColor = NSColor(red: 0.847, green: 0.106, blue: 0.376, alpha: 1.0)
     private let textColor = NSColor.white
+    private let backgroundColor: NSColor
     
     var bounds: CGRect {
         return CGRect(
@@ -247,9 +280,10 @@ final class StepCounterElement: MarkupElement {
         )
     }
     
-    init(centerPoint: CGPoint, stepNumber: Int) {
+    init(centerPoint: CGPoint, stepNumber: Int, color: NSColor = MarkupColorManager.shared.currentColor) {
         self.centerPoint = centerPoint
         self.stepNumber = stepNumber
+        self.backgroundColor = color
     }
     
     func draw(in context: CGContext) {
@@ -336,18 +370,19 @@ final class TextElement: MarkupElement {
         }
     }
     private let fontSize: CGFloat = 18.0
-    private let textColor = NSColor(red: 0.847, green: 0.106, blue: 0.376, alpha: 1.0)
     private let font: NSFont
     private var _bounds: CGRect
+    private let textColor: NSColor
     
     var bounds: CGRect {
         return _bounds
     }
     
-    init(position: CGPoint, text: String = "") {
+    init(position: CGPoint, text: String = "", color: NSColor = MarkupColorManager.shared.currentColor) {
         self.position = position
         self.text = text
         self.font = NSFont.systemFont(ofSize: fontSize, weight: .medium)
+        self.textColor = color
         self._bounds = CGRect.zero
         updateBounds()
     }
