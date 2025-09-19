@@ -32,6 +32,35 @@ final class MarkupColorManager {
     }
 }
 
+// MARK: - Line Thickness Management
+final class MarkupLineThicknessManager {
+    static let shared = MarkupLineThicknessManager()
+    
+    private let thicknessKey = "VibeShot.LineThickness"
+    
+    // Default line thickness (current arrow thickness)
+    private let defaultThickness: CGFloat = 6.0
+    
+    // Available thickness options (2pt to 12pt)
+    let availableThicknesses: [CGFloat] = [2.0, 4.0, 6.0, 8.0, 10.0, 12.0]
+    
+    private init() {}
+    
+    var currentThickness: CGFloat {
+        get {
+            let thickness = UserDefaults.standard.double(forKey: thicknessKey)
+            return thickness > 0 ? CGFloat(thickness) : defaultThickness
+        }
+        set {
+            UserDefaults.standard.set(Double(newValue), forKey: thicknessKey)
+        }
+    }
+    
+    func resetToDefault() {
+        currentThickness = defaultThickness
+    }
+}
+
 // MARK: - Markup Tool Types
 enum MarkupTool: CaseIterable {
     case selection
@@ -96,7 +125,7 @@ final class ArrowElement: MarkupElement {
     
     private var startPoint: CGPoint
     private var endPoint: CGPoint
-    private let lineWidth: CGFloat = 6.0
+    private let lineWidth: CGFloat
     private let color: NSColor
     
     var bounds: CGRect {
@@ -111,6 +140,7 @@ final class ArrowElement: MarkupElement {
         self.startPoint = startPoint
         self.endPoint = endPoint
         self.color = color
+        self.lineWidth = MarkupLineThicknessManager.shared.currentThickness
     }
     
     func draw(in context: CGContext) {
@@ -224,7 +254,7 @@ final class RectangleElement: MarkupElement {
     
     private var startPoint: CGPoint
     private var endPoint: CGPoint
-    private let lineWidth: CGFloat = 6.0
+    private let lineWidth: CGFloat
     private let cornerRadius: CGFloat = 8.0
     private let color: NSColor
     
@@ -242,6 +272,7 @@ final class RectangleElement: MarkupElement {
         self.startPoint = startPoint
         self.endPoint = endPoint
         self.color = color
+        self.lineWidth = MarkupLineThicknessManager.shared.currentThickness
     }
     
     func draw(in context: CGContext) {
@@ -300,8 +331,12 @@ final class StepCounterElement: MarkupElement {
     private var centerPoint: CGPoint
     let stepNumber: Int
     private let radius: CGFloat = 20.0
-    private let textColor = NSColor.white
     private let backgroundColor: NSColor
+    
+    // Compute text color based on background brightness
+    private var textColor: NSColor {
+        return backgroundColor.isLight ? NSColor.black : NSColor.white
+    }
     
     var bounds: CGRect {
         return CGRect(
@@ -506,5 +541,33 @@ final class TextElement: MarkupElement {
         position.y += delta.y
         _bounds.origin.x += delta.x
         _bounds.origin.y += delta.y
+    }
+}
+
+// MARK: - NSColor Extension for Brightness Detection
+extension NSColor {
+    /// Determines if the color is light based on its perceived luminance
+    var isLight: Bool {
+        // Convert to RGB color space if needed
+        guard let rgbColor = self.usingColorSpace(.deviceRGB) else {
+            // Fallback: assume dark if we can't determine
+            return false
+        }
+        
+        // Get RGB components
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        
+        rgbColor.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        
+        // Calculate perceived luminance using the relative luminance formula
+        // This is more accurate than simple RGB averaging
+        let luminance = 0.299 * red + 0.587 * green + 0.114 * blue
+        
+        // Consider colors with luminance > 0.6 as light
+        // This threshold ensures good contrast for both white and black text
+        return luminance > 0.6
     }
 }

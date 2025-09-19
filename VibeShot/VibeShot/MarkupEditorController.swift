@@ -584,7 +584,7 @@ final class MarkupCanvasView: NSView {
         context.saveGState()
         
         let color = MarkupColorManager.shared.currentColor.withAlphaComponent(0.7) // Semi-transparent preview
-        let lineWidth: CGFloat = 6.0
+        let lineWidth = MarkupLineThicknessManager.shared.currentThickness
         
         // Set line properties
         context.setStrokeColor(color.cgColor)
@@ -594,7 +594,7 @@ final class MarkupCanvasView: NSView {
         
         // Calculate arrow geometry - increased arrowhead size to match final arrows
         let angle = atan2(endPoint.y - startPoint.y, endPoint.x - startPoint.x)
-        let arrowLength: CGFloat = lineWidth * 5.0  // Doubled from 2.5 to 5.0
+        let arrowLength: CGFloat = lineWidth * 5.0  // Scale arrowhead with line thickness
         
         // Calculate where the line should end (closer to the arrowhead tip for better connection)
         let lineEndPoint = CGPoint(
@@ -663,7 +663,7 @@ final class MarkupCanvasView: NSView {
         )
         
         let color = MarkupColorManager.shared.currentColor.withAlphaComponent(0.7) // Semi-transparent preview using same color as arrows
-        let lineWidth: CGFloat = 6.0
+        let lineWidth = MarkupLineThicknessManager.shared.currentThickness
         let cornerRadius: CGFloat = 8.0
         
         // Set line properties
@@ -1033,7 +1033,9 @@ final class MarkupToolbarView: NSView {
     
     private var selectedTool: MarkupTool = .arrow  // Match the controller's default
     private var toolButtons: [MarkupTool: NSButton] = [:]
+    private var thicknessButton: NSButton!
     private var colorButton: NSButton!
+    private var activeMenu: NSMenu?
     
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1069,6 +1071,10 @@ final class MarkupToolbarView: NSView {
         separator.heightAnchor.constraint(equalToConstant: 24).isActive = true
         stackView.addArrangedSubview(separator)
         
+        // Add line thickness picker button
+        thicknessButton = createThicknessButton()
+        stackView.addArrangedSubview(thicknessButton)
+        
         // Add color picker button
         colorButton = createColorButton()
         stackView.addArrangedSubview(colorButton)
@@ -1085,6 +1091,7 @@ final class MarkupToolbarView: NSView {
         // Select arrow tool by default instead of selection tool
         selectedTool = .arrow
         updateToolSelection()
+        updateThicknessButton()
         updateColorButton()
     }
     
@@ -1147,6 +1154,29 @@ final class MarkupToolbarView: NSView {
                 button.contentTintColor = NSColor.controlTextColor
             }
         }
+    }
+    
+    private func createThicknessButton() -> NSButton {
+        let button = NSButton()
+        button.title = ""
+        button.bezelStyle = .regularSquare
+        button.setButtonType(.momentaryPushIn)
+        button.target = self
+        button.action = #selector(thicknessButtonPressed(_:))
+        button.toolTip = "Line Thickness"
+        
+        // Set button size
+        button.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        
+        // Style the button
+        button.wantsLayer = true
+        button.layer?.cornerRadius = 4
+        button.layer?.borderWidth = 1
+        button.layer?.borderColor = NSColor.controlColor.cgColor
+        button.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        
+        return button
     }
     
     private func createColorButton() -> NSButton {
@@ -1213,8 +1243,167 @@ final class MarkupToolbarView: NSView {
         colorButton.layer?.borderColor = NSColor.controlColor.cgColor
     }
     
+    @objc private func thicknessButtonPressed(_ sender: NSButton) {
+        showThicknessMenu(from: sender)
+    }
+    
+    private func showThicknessMenu(from button: NSButton) {
+        let menu = NSMenu()
+        activeMenu = menu
+        
+        for thickness in MarkupLineThicknessManager.shared.availableThicknesses {
+            let item = NSMenuItem()
+            
+            // Create a custom view that shows the line thickness visually
+            let menuItemView = createThicknessMenuItemView(thickness: thickness)
+            item.view = menuItemView
+            
+            // Add checkmark for current thickness
+            if thickness == MarkupLineThicknessManager.shared.currentThickness {
+                item.state = .on
+            }
+            
+            menu.addItem(item)
+        }
+        
+        // Show menu below the button
+        let buttonFrame = button.frame
+        let menuLocation = NSPoint(x: buttonFrame.minX, y: buttonFrame.minY)
+        menu.popUp(positioning: nil, at: menuLocation, in: button.superview)
+        
+        activeMenu = nil
+    }
+    
+    private func createThicknessMenuItemView(thickness: CGFloat) -> NSView {
+        let containerView = NSView()
+        containerView.frame = NSRect(x: 0, y: 0, width: 120, height: 24)
+        
+        // Create a button that covers the entire menu item area
+        let button = NSButton()
+        button.frame = containerView.bounds
+        button.title = ""
+        button.bezelStyle = .regularSquare
+        button.setButtonType(.momentaryPushIn)
+        button.isBordered = false
+        button.target = self
+        button.action = #selector(thicknessMenuItemSelected(_:))
+        button.tag = Int(thickness * 10) // Store thickness as tag (e.g., 20 for 2.0pt)
+        
+        // Create a custom view that draws the line thickness
+        let lineView = ThicknessPreviewView(thickness: thickness)
+        lineView.frame = NSRect(x: 8, y: 6, width: 80, height: 12)
+        
+        // Add label with point size
+        let label = NSTextField(labelWithString: "\(Int(thickness))pt")
+        label.font = NSFont.systemFont(ofSize: 11)
+        label.textColor = NSColor.controlTextColor
+        label.frame = NSRect(x: 92, y: 4, width: 25, height: 16)
+        
+        // Add visual elements to the button
+        button.addSubview(lineView)
+        button.addSubview(label)
+        
+        containerView.addSubview(button)
+        
+        return containerView
+    }
+    
+    @objc private func thicknessMenuItemSelected(_ sender: NSButton) {
+        let thickness = CGFloat(sender.tag) / 10.0 // Convert back from tag (e.g., 20 -> 2.0)
+        MarkupLineThicknessManager.shared.currentThickness = thickness
+        updateThicknessButton()
+        
+        // Close the active menu
+        activeMenu?.cancelTracking()
+    }
+    
+    private func updateThicknessButton() {
+        // Create a custom image showing the current line thickness
+        let thickness = MarkupLineThicknessManager.shared.currentThickness
+        let image = createLineThicknessImage(thickness: thickness)
+        thicknessButton.image = image
+    }
+    
+    private func createLineThicknessImage(thickness: CGFloat) -> NSImage {
+        let size = NSSize(width: 28, height: 20)
+        let image = NSImage(size: size)
+        
+        image.lockFocus()
+        
+        if let context = NSGraphicsContext.current?.cgContext {
+            // Clear background
+            context.clear(CGRect(origin: .zero, size: size))
+            
+            // Draw line preview
+            context.setStrokeColor(NSColor.controlTextColor.cgColor)
+            context.setLineWidth(thickness)
+            context.setLineCap(.round)
+            
+            let startPoint = CGPoint(x: 4, y: size.height / 2)
+            let endPoint = CGPoint(x: size.width - 4, y: size.height / 2)
+            
+            context.move(to: startPoint)
+            context.addLine(to: endPoint)
+            context.strokePath()
+        }
+        
+        image.unlockFocus()
+        return image
+    }
+    
     func setSelectedTool(_ tool: MarkupTool) {
         selectedTool = tool
         updateToolSelection()
+    }
+}
+
+// MARK: - Thickness Preview View
+class ThicknessPreviewView: NSView {
+    private let thickness: CGFloat
+    
+    init(thickness: CGFloat) {
+        self.thickness = thickness
+        super.init(frame: .zero)
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        
+        // Draw the line preview
+        context.setStrokeColor(NSColor.controlTextColor.cgColor)
+        context.setLineWidth(thickness)
+        context.setLineCap(.round)
+        
+        let startPoint = CGPoint(x: 4, y: bounds.height / 2)
+        let endPoint = CGPoint(x: bounds.width - 4, y: bounds.height / 2)
+        
+        context.move(to: startPoint)
+        context.addLine(to: endPoint)
+        context.strokePath()
+    }
+}
+
+// MARK: - NSButton Extension for Menu Items
+extension NSButton {
+    func findEnclosingMenuItem() -> NSMenuItem? {
+        var view: NSView? = self.superview
+        while view != nil {
+            if let menu = view?.superview?.superview as? NSMenu {
+                // Find the menu item that contains this button
+                for item in menu.items {
+                    if item.view?.subviews.contains(where: { $0 == self || $0.subviews.contains(self) }) == true {
+                        return item
+                    }
+                }
+            }
+            view = view?.superview
+        }
+        return nil
     }
 }
