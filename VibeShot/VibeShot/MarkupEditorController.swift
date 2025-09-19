@@ -6,7 +6,11 @@ final class MarkupEditorController: NSWindowController {
     private let baseImage: NSImage
     private var markupElements: [any MarkupElement] = []
     private var currentTool: MarkupTool = .arrow  // Start with arrow tool selected
-    private var selectedElement: (any MarkupElement)?
+    internal var selectedElement: (any MarkupElement)?
+    
+    // Move tool properties
+    private var moveStartPoint: CGPoint?
+    private var elementStartPosition: CGPoint?
     
     private var canvasView: MarkupCanvasView!
     private var toolbarView: MarkupToolbarView!
@@ -136,9 +140,12 @@ extension MarkupEditorController: MarkupToolbarDelegate {
 // MARK: - MarkupCanvasDelegate
 extension MarkupEditorController: MarkupCanvasDelegate {
     func canvasDidStartDrawing(at point: CGPoint) {
+        print("🖱️ Canvas click at \(point) with tool: \(currentTool)")
         switch currentTool {
         case .selection:
             handleSelectionAt(point)
+        case .move:
+            handleMoveStart(at: point)
         case .arrow, .rectangle:
             // Will handle in canvasDidFinishDrawing
             break
@@ -155,6 +162,8 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         switch currentTool {
         case .selection:
             break // Already handled in start
+        case .move:
+            handleMoveFinish(from: startPoint, to: endPoint)
         case .arrow:
             // Calculate the distance of the arrow
             let distance = sqrt(pow(endPoint.x - startPoint.x, 2) + pow(endPoint.y - startPoint.y, 2))
@@ -200,6 +209,36 @@ extension MarkupEditorController: MarkupCanvasDelegate {
     }
     
     func canvasDidReceiveKeyDown(with event: NSEvent) {
+        // Check if we're currently in text editing mode
+        if canvasView.textView != nil {
+            // Don't handle keyboard shortcuts while editing text
+            return
+        }
+        
+        // Handle keyboard shortcuts for tool switching
+        if let keyCharacter = event.charactersIgnoringModifiers?.lowercased() {
+            for tool in MarkupTool.allCases {
+                if keyCharacter == tool.keyboardShortcut {
+                    print("🔧 Tool changed to: \(tool)")
+                    currentTool = tool
+                    
+                    // Clear selections when switching to move tool for clean slate
+                    if tool == .move {
+                        for element in markupElements {
+                            element.isSelected = false
+                        }
+                        selectedElement = nil
+                        canvasView.needsDisplay = true
+                    }
+                    
+                    toolbarView.setSelectedTool(tool)
+                    canvasView.setCurrentTool(tool)
+                    return
+                }
+            }
+        }
+        
+        // Handle other keyboard shortcuts
         if event.keyCode == 51 { // Delete key
             deleteSelectedElement()
         } else if event.keyCode == 8 && event.modifierFlags.contains(.command) { // Cmd+C
@@ -213,7 +252,14 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         markupElements = elements
     }
     
+    func canvasDidSelectElement(_ element: any MarkupElement) {
+        print("🎯 Canvas notified of element selection: \(type(of: element))")
+        selectedElement = element
+        canvasView.needsDisplay = true
+    }
+    
     private func handleSelectionAt(_ point: CGPoint) {
+        print("🎯 Selection at point: \(point)")
         // First deselect all elements
         for element in markupElements {
             element.isSelected = false
@@ -222,14 +268,89 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         
         // Find topmost element at point (reverse order for topmost)
         for (_, element) in markupElements.reversed().enumerated() {
+            print("🎯 Checking element \(type(of: element)) at bounds: \(element.bounds)")
             if element.contains(point: point) {
+                print("🎯 Found element at point! Selecting: \(type(of: element))")
                 selectedElement = element
                 element.isSelected = true
                 break
             }
         }
         
+        if selectedElement == nil {
+            print("🎯 No element found at selection point")
+        }
+        
         canvasView.needsDisplay = true
+    }
+    
+    private func handleMoveStart(at point: CGPoint) {
+        print("🔍 Move start at point: \(point)")
+        moveStartPoint = point
+        
+        // First, deselect all elements
+        for element in markupElements {
+            element.isSelected = false
+        }
+        selectedElement = nil
+        
+        // Find element at point to select and move
+        for (_, element) in markupElements.reversed().enumerated() {
+            print("🔍 Checking element \(type(of: element)) at bounds: \(element.bounds)")
+            if element.contains(point: point) {
+                print("🔍 Found element at point! Selecting and starting move: \(type(of: element))")
+                selectedElement = element
+                element.isSelected = true
+                elementStartPosition = element.bounds.origin
+                canvasView.needsDisplay = true
+                return
+            }
+        }
+        
+        print("🔍 No element found at move point")
+        canvasView.needsDisplay = true
+    }
+    
+    private func handleMoveFinish(from startPoint: CGPoint, to endPoint: CGPoint) {
+        print("🔍 Move finish from \(startPoint) to \(endPoint)")
+        guard let selected = selectedElement,
+              let moveStart = moveStartPoint,
+              let _ = elementStartPosition else { 
+            print("🔍 Move finish failed - missing: selected=\(selectedElement != nil), moveStart=\(moveStartPoint != nil), elementStartPosition=\(elementStartPosition != nil)")
+            return 
+        }
+        
+        // Calculate the delta movement
+        let deltaX = endPoint.x - moveStart.x
+        let deltaY = endPoint.y - moveStart.y
+        print("🔍 Moving element by delta: (\(deltaX), \(deltaY))")
+        
+        // Apply movement based on element type
+        moveElement(selected, deltaX: deltaX, deltaY: deltaY)
+        
+        // Clear move state
+        moveStartPoint = nil
+        elementStartPosition = nil
+        
+        canvasView.needsDisplay = true
+    }
+    
+    private func moveElement(_ element: any MarkupElement, deltaX: CGFloat, deltaY: CGFloat) {
+        print("🔍 Moving element type: \(type(of: element)) by (\(deltaX), \(deltaY))")
+        // Move different element types
+        if let arrow = element as? ArrowElement {
+            print("🔍 Moving arrow element")
+            arrow.move(by: CGPoint(x: deltaX, y: deltaY))
+        } else if let rectangle = element as? RectangleElement {
+            print("🔍 Moving rectangle element")
+            rectangle.move(by: CGPoint(x: deltaX, y: deltaY))
+        } else if let stepCounter = element as? StepCounterElement {
+            print("🔍 Moving step counter element")
+            stepCounter.move(by: CGPoint(x: deltaX, y: deltaY))
+        } else if let text = element as? TextElement {
+            print("🔍 Moving text element")
+            text.move(by: CGPoint(x: deltaX, y: deltaY))
+        }
     }
     
     private func handleStepCounterStamp(at point: CGPoint) {
@@ -339,6 +460,8 @@ protocol MarkupCanvasDelegate: AnyObject {
     func canvasDidFinishDrawing(from startPoint: CGPoint, to endPoint: CGPoint)
     func canvasDidReceiveKeyDown(with event: NSEvent)
     func canvasDidUpdateElements(_ elements: [any MarkupElement])
+    func canvasDidSelectElement(_ element: any MarkupElement)
+    var selectedElement: (any MarkupElement)? { get }
 }
 
 final class MarkupCanvasView: NSView {
@@ -361,7 +484,7 @@ final class MarkupCanvasView: NSView {
     
     // Text editing properties
     private var currentTextElement: TextElement?
-    private var textView: MarkupTextView?
+    var textView: MarkupTextView?
     private var scrollView: NSScrollView?
     
     init(baseImage: NSImage) {
@@ -428,6 +551,10 @@ final class MarkupCanvasView: NSView {
         
         // Draw all markup elements
         for element in markupElements {
+            // Skip drawing the element being moved to avoid showing it in original position
+            if isDrawing && currentTool == .move && delegate?.selectedElement === element {
+                continue
+            }
             element.draw(in: context)
         }
         
@@ -438,6 +565,9 @@ final class MarkupCanvasView: NSView {
                 drawPreviewArrow(from: startPoint, to: endPoint, in: context)
             case .selection:
                 drawSelectionRect(from: startPoint, to: endPoint, in: context)
+            case .move:
+                // For move tool, show element being dragged at new position
+                drawMovePreview(from: startPoint, to: endPoint, in: context)
             case .rectangle:
                 drawRectanglePreview(from: startPoint, to: endPoint, in: context)
             case .stepCounter:
@@ -550,6 +680,29 @@ final class MarkupCanvasView: NSView {
         context.restoreGState()
     }
     
+    private func drawMovePreview(from startPoint: CGPoint, to endPoint: CGPoint, in context: CGContext) {
+        // Only show move preview if there's a selected element
+        guard let selectedElement = delegate?.selectedElement else { return }
+        
+        // Calculate the movement delta
+        let deltaX = endPoint.x - startPoint.x
+        let deltaY = endPoint.y - startPoint.y
+        
+        // Save the current state
+        context.saveGState()
+        
+        // Draw at full opacity since this is the only version of the element shown
+        context.setAlpha(1.0)
+        
+        // Translate to show the element at its new position
+        context.translateBy(x: deltaX, y: deltaY)
+        
+        // Draw the element at the new position
+        selectedElement.draw(in: context)
+        
+        context.restoreGState()
+    }
+    
     // MARK: - Mouse Events
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
@@ -603,16 +756,26 @@ final class MarkupCanvasView: NSView {
     private func handleRectangleSelection() {
         guard let rect = selectionRect else { return }
         
+        print("📦 Rectangle selection with rect: \(rect)")
+        
         // Clear previous selections
         for element in markupElements {
             element.isSelected = false
         }
         
         // Select elements that intersect with the selection rectangle
+        var selectedElements: [any MarkupElement] = []
         for element in markupElements {
             if element.bounds.intersects(rect) {
                 element.isSelected = true
+                selectedElements.append(element)
+                print("📦 Selected element via rectangle: \(type(of: element))")
             }
+        }
+        
+        // Update the delegate with the selected element (if any)
+        if let firstSelected = selectedElements.first {
+            delegate?.canvasDidSelectElement(firstSelected)
         }
         
         needsDisplay = true
@@ -936,15 +1099,15 @@ final class MarkupToolbarView: NSView {
             button.title = tool.displayName
         }
         
+        // Set tooltip with keyboard shortcut
+        button.toolTip = tool.displayNameWithShortcut
+        
         button.imageScaling = .scaleProportionallyDown
         button.bezelStyle = .regularSquare
         button.setButtonType(.toggle)
         button.target = self
         button.action = #selector(toolButtonPressed(_:))
         button.tag = MarkupTool.allCases.firstIndex(of: tool) ?? 0
-        
-        // Set tooltip for better UX
-        button.toolTip = tool.displayName
         
         // Ensure button has proper sizing
         button.widthAnchor.constraint(equalToConstant: 40).isActive = true
@@ -1048,5 +1211,10 @@ final class MarkupToolbarView: NSView {
         
         // Add a subtle border to make the color visible even for light colors
         colorButton.layer?.borderColor = NSColor.controlColor.cgColor
+    }
+    
+    func setSelectedTool(_ tool: MarkupTool) {
+        selectedTool = tool
+        updateToolSelection()
     }
 }

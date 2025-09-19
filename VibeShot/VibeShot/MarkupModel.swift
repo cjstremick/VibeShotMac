@@ -35,6 +35,7 @@ final class MarkupColorManager {
 // MARK: - Markup Tool Types
 enum MarkupTool: CaseIterable {
     case selection
+    case move
     case arrow
     case rectangle
     case stepCounter
@@ -43,6 +44,7 @@ enum MarkupTool: CaseIterable {
     var displayName: String {
         switch self {
         case .selection: return "Selection"
+        case .move: return "Move"
         case .arrow: return "Arrow"
         case .rectangle: return "Rectangle"
         case .stepCounter: return "Step Counter"
@@ -53,11 +55,27 @@ enum MarkupTool: CaseIterable {
     var iconName: String {
         switch self {
         case .selection: return "cursorarrow"
+        case .move: return "move.3d"
         case .arrow: return "arrow.up.right"
         case .rectangle: return "rectangle"
         case .stepCounter: return "number.circle"
         case .text: return "textformat"
         }
+    }
+    
+    var keyboardShortcut: String {
+        switch self {
+        case .selection: return "s"
+        case .move: return "m"
+        case .arrow: return "a"
+        case .rectangle: return "r"
+        case .stepCounter: return "c"
+        case .text: return "t"
+        }
+    }
+    
+    var displayNameWithShortcut: String {
+        return "\(displayName) (\(keyboardShortcut.uppercased()))"
     }
 }
 
@@ -76,8 +94,8 @@ final class ArrowElement: MarkupElement {
     let id = UUID()
     var isSelected: Bool = false
     
-    private let startPoint: CGPoint
-    private let endPoint: CGPoint
+    private var startPoint: CGPoint
+    private var endPoint: CGPoint
     private let lineWidth: CGFloat = 6.0
     private let color: NSColor
     
@@ -190,6 +208,13 @@ final class ArrowElement: MarkupElement {
         context.setLineDash(phase: 0, lengths: [4, 4])
         context.stroke(bounds.insetBy(dx: -5, dy: -5))
     }
+    
+    func move(by delta: CGPoint) {
+        startPoint.x += delta.x
+        startPoint.y += delta.y
+        endPoint.x += delta.x
+        endPoint.y += delta.y
+    }
 }
 
 // MARK: - Rectangle Element
@@ -197,8 +222,8 @@ final class RectangleElement: MarkupElement {
     let id = UUID()
     var isSelected: Bool = false
     
-    private let startPoint: CGPoint
-    private let endPoint: CGPoint
+    private var startPoint: CGPoint
+    private var endPoint: CGPoint
     private let lineWidth: CGFloat = 6.0
     private let cornerRadius: CGFloat = 8.0
     private let color: NSColor
@@ -258,6 +283,13 @@ final class RectangleElement: MarkupElement {
         context.setLineDash(phase: 0, lengths: [4, 4])
         context.stroke(bounds.insetBy(dx: -5, dy: -5))
     }
+    
+    func move(by delta: CGPoint) {
+        startPoint.x += delta.x
+        startPoint.y += delta.y
+        endPoint.x += delta.x
+        endPoint.y += delta.y
+    }
 }
 
 // MARK: - Step Counter Element
@@ -265,7 +297,7 @@ final class StepCounterElement: MarkupElement {
     let id = UUID()
     var isSelected: Bool = false
     
-    private let centerPoint: CGPoint
+    private var centerPoint: CGPoint
     let stepNumber: Int
     private let radius: CGFloat = 20.0
     private let textColor = NSColor.white
@@ -354,6 +386,11 @@ final class StepCounterElement: MarkupElement {
         context.setLineDash(phase: 0, lengths: [4, 4])
         context.addEllipse(in: bounds.insetBy(dx: -5, dy: -5))
         context.strokePath()
+    }
+    
+    func move(by delta: CGPoint) {
+        centerPoint.x += delta.x
+        centerPoint.y += delta.y
     }
 }
 
@@ -462,5 +499,12 @@ final class TextElement: MarkupElement {
         context.setLineWidth(2.0)
         context.setLineDash(phase: 0, lengths: [4, 4])
         context.stroke(bounds.insetBy(dx: -5, dy: -5))
+    }
+    
+    func move(by delta: CGPoint) {
+        position.x += delta.x
+        position.y += delta.y
+        _bounds.origin.x += delta.x
+        _bounds.origin.y += delta.y
     }
 }
