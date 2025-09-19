@@ -26,7 +26,7 @@ final class QuickSCKitCapture: RegionCapturing {
         config.sourceRect = sourceRect
         
         let filter = try await contentFilter(for: display)
-        let stream = try SCStream(filter: filter, configuration: config, delegate: nil)
+        let stream = SCStream(filter: filter, configuration: config, delegate: nil)
         let collector = FirstFrameCollector()
         try stream.addStreamOutput(collector, type: .screen, sampleHandlerQueue: .main)
         try await stream.startCapture()

@@ -93,8 +93,6 @@ final class MarkupEditorController: NSWindowController {
         // Ensure delegate is properly set after layout
         canvasView.delegate = self
         toolbarView.delegate = self
-        
-        print("🔗 Delegates set - Canvas delegate: \(canvasView.delegate != nil), Toolbar delegate: \(toolbarView.delegate != nil)")
     }
     
     func show() {
@@ -138,7 +136,6 @@ extension MarkupEditorController: MarkupToolbarDelegate {
 // MARK: - MarkupCanvasDelegate
 extension MarkupEditorController: MarkupCanvasDelegate {
     func canvasDidStartDrawing(at point: CGPoint) {
-        print("🎯 canvasDidStartDrawing called with currentTool: \(currentTool) at point: \(point)")
         switch currentTool {
         case .selection:
             handleSelectionAt(point)
@@ -150,7 +147,6 @@ extension MarkupEditorController: MarkupCanvasDelegate {
             handleStepCounterStamp(at: point)
         case .text:
             // Handle text editing immediately on click
-            print("🎯 Switching to handleTextInput")
             handleTextInput(at: point)
         }
     }
@@ -214,14 +210,10 @@ extension MarkupEditorController: MarkupCanvasDelegate {
     }
     
     func canvasDidUpdateElements(_ elements: [any MarkupElement]) {
-        print("🔄 canvasDidUpdateElements called with \(elements.count) elements")
         markupElements = elements
     }
     
     private func handleSelectionAt(_ point: CGPoint) {
-        print("🎯 handleSelectionAt called at point: \(point)")
-        print("🎯 Total elements: \(markupElements.count)")
-        
         // First deselect all elements
         for element in markupElements {
             element.isSelected = false
@@ -229,18 +221,12 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         selectedElement = nil
         
         // Find topmost element at point (reverse order for topmost)
-        for (index, element) in markupElements.reversed().enumerated() {
-            print("🎯 Checking element \(index): \(type(of: element)), bounds: \(element.bounds), contains: \(element.contains(point: point))")
+        for (_, element) in markupElements.reversed().enumerated() {
             if element.contains(point: point) {
                 selectedElement = element
                 element.isSelected = true
-                print("🎯 Selected element: \(type(of: element))")
                 break
             }
-        }
-        
-        if selectedElement == nil {
-            print("🎯 No element found at point, all deselected")
         }
         
         canvasView.needsDisplay = true
@@ -265,7 +251,6 @@ extension MarkupEditorController: MarkupCanvasDelegate {
     }
     
     private func handleTextInput(at point: CGPoint) {
-        print("🔤 handleTextInput called at point: \(point), currentTool: \(currentTool)")
         // Start text editing at the clicked location
         canvasView.startTextEditing(at: point)
         // Note: Synchronization will happen after text editing is complete
@@ -328,14 +313,12 @@ class MarkupTextView: NSTextView {
     override func keyDown(with event: NSEvent) {
         // Handle Cmd+Enter specifically
         if event.keyCode == 36 && event.modifierFlags.contains(.command) { // Enter key with Cmd
-            print("🔤 MarkupTextView: Cmd+Enter detected directly")
             markupDelegate?.textViewDidReceiveCommandEnter()
             return
         }
         
         // Handle Escape key to cancel editing
         if event.keyCode == 53 { // Escape key
-            print("🔤 MarkupTextView: Escape detected - canceling text editing")
             markupDelegate?.textViewDidReceiveEscape()
             return
         }
@@ -570,15 +553,12 @@ final class MarkupCanvasView: NSView {
     // MARK: - Mouse Events
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        print("🖱️ mouseDown at point: \(point), currentTool: \(currentTool), delegate: \(delegate != nil)")
         dragStartPoint = point
         currentDragPoint = point
         isDrawing = true
         selectionRect = nil
         
-        print("🖱️ About to call delegate?.canvasDidStartDrawing")
         delegate?.canvasDidStartDrawing(at: point)
-        print("🖱️ delegate?.canvasDidStartDrawing called")
         
         needsDisplay = true
     }
@@ -640,17 +620,14 @@ final class MarkupCanvasView: NSView {
     
     // MARK: - Text Editing
     func startTextEditing(at point: CGPoint) {
-        print("🔤 startTextEditing called at point: \(point)")
         
         // If we're in selection mode, don't start text editing - let selection handle it
         if currentTool == .selection {
-            print("🔤 In selection mode, skipping text editing")
             return
         }
         
         // Don't end existing text editing if we're clicking in the same area
         if let existingTextView = textView, existingTextView.frame.contains(point) {
-            print("🔤 Clicked inside existing text view, keeping it active")
             return
         }
         
@@ -660,7 +637,6 @@ final class MarkupCanvasView: NSView {
         // Check if we clicked on an existing text element
         for element in markupElements.reversed() {
             if let textElement = element as? TextElement, textElement.contains(point: point) {
-                print("🔤 Editing existing text element")
                 // Edit existing text element
                 editTextElement(textElement)
                 return
@@ -668,7 +644,6 @@ final class MarkupCanvasView: NSView {
         }
         
         // Create new text element
-        print("🔤 Creating new text element")
         let textElement = TextElement(position: point, text: "", color: MarkupColorManager.shared.currentColor)
         markupElements.append(textElement)
         needsDisplay = true
@@ -679,13 +654,11 @@ final class MarkupCanvasView: NSView {
     func endTextEditingIfActive() {
         // Check if text editing is currently active
         if textView != nil || currentTextElement != nil {
-            print("🔤 Ending active text editing due to tool change")
             endTextEditing()
         }
     }
     
     private func editTextElement(_ textElement: TextElement) {
-        print("🔤 editTextElement called")
         currentTextElement = textElement
         textElement.isSelected = true
         textElement.isBeingEdited = true  // Hide the element while editing
@@ -697,7 +670,6 @@ final class MarkupCanvasView: NSView {
     }
     
     private func createTextViewForEditing(_ textElement: TextElement) {
-        print("🔤 createTextViewForEditing called")
         
         // Ensure we clean up any existing text view first
         textView?.removeFromSuperview()
@@ -741,7 +713,6 @@ final class MarkupCanvasView: NSView {
         // Remove the border - we don't need it with transparent background
         newTextView.wantsLayer = false
         
-        print("🔤 Adding text view with frame: \(newTextView.frame)")
         addSubview(newTextView)
         self.textView = newTextView
         self.scrollView = nil // Not using scroll view anymore
@@ -754,7 +725,6 @@ final class MarkupCanvasView: NSView {
             } else {
                 newTextView.selectAll(nil) // Select existing text
             }
-            print("🔤 Text view focused and text selected")
         }
     }
     
@@ -829,8 +799,10 @@ extension MarkupCanvasView: NSTextViewDelegate {
         guard let textView = self.textView else { return }
         
         // Calculate the size needed for the current text
-        let textContainer = textView.textContainer!
-        let layoutManager = textView.layoutManager!
+        guard let textContainer = textView.textContainer,
+              let layoutManager = textView.layoutManager else {
+            return
+        }
         
         // Force layout to get accurate measurements
         layoutManager.ensureLayout(for: textContainer)
@@ -852,7 +824,6 @@ extension MarkupCanvasView: NSTextViewDelegate {
     }
     
     func textDidEndEditing(_ notification: Notification) {
-        print("🔤 textDidEndEditing called")
         // Only end editing if it's not due to a command we're handling
         let reasonCode = notification.userInfo?["NSTextMovement"] as? Int
         if reasonCode == NSTextMovement.return.rawValue {
@@ -863,15 +834,12 @@ extension MarkupCanvasView: NSTextViewDelegate {
     }
     
     func textDidBeginEditing(_ notification: Notification) {
-        print("🔤 textDidBeginEditing called")
     }
     
     func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-        print("🔤 doCommandBy called with selector: \(commandSelector)")
         
         if commandSelector == #selector(NSResponder.insertNewline(_:)) {
             // Regular Enter - insert new line (let NSTextView handle it)
-            print("🔤 Enter detected - inserting new line")
             return false // Let NSTextView handle the newline insertion
         }
         
@@ -882,12 +850,10 @@ extension MarkupCanvasView: NSTextViewDelegate {
 // MARK: - MarkupTextViewDelegate
 extension MarkupCanvasView: MarkupTextViewDelegate {
     func textViewDidReceiveCommandEnter() {
-        print("🔤 textViewDidReceiveCommandEnter called - finishing text editing")
         endTextEditing()
     }
     
     func textViewDidReceiveEscape() {
-        print("🔤 textViewDidReceiveEscape called - canceling text editing")
         // Escape key handling to cancel text editing and remove the text element
         endTextEditing(shouldCancel: true)
     }
