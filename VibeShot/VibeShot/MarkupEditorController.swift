@@ -15,6 +15,9 @@ final class MarkupEditorController: NSWindowController {
     private var canvasView: MarkupCanvasView!
     private var toolbarView: MarkupToolbarView!
     
+    // Minimum window width to ensure toolbar doesn't get clipped
+    private static let minimumWindowWidth: CGFloat = 600
+    
     init(baseImage: NSImage) {
         self.baseImage = baseImage
         
@@ -22,10 +25,13 @@ final class MarkupEditorController: NSWindowController {
         self.canvasView = MarkupCanvasView(baseImage: baseImage)
         self.toolbarView = MarkupToolbarView()
         
-        // Create window sized to fit image exactly, plus toolbar
+        // Create window with minimum width consideration
         let imageSize = baseImage.size
         let toolbarHeight: CGFloat = 44
-        let windowSize = NSSize(width: imageSize.width, height: imageSize.height + toolbarHeight)
+        
+        // Ensure window is at least the minimum width
+        let windowWidth = max(imageSize.width, Self.minimumWindowWidth)
+        let windowSize = NSSize(width: windowWidth, height: imageSize.height + toolbarHeight)
         
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: windowSize),
@@ -55,6 +61,9 @@ final class MarkupEditorController: NSWindowController {
             name: NSColorPanel.colorDidChangeNotification,
             object: NSColorPanel.shared
         )
+        
+        // Clean up distributed notification center observers
+        DistributedNotificationCenter.default().removeObserver(self)
     }
     
     private func setupWindow() {
@@ -71,8 +80,10 @@ final class MarkupEditorController: NSWindowController {
         guard let window = window else { return }
         
         let containerView = NSView()
+        containerView.wantsLayer = true
+        containerView.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         
-        // Add toolbar at top
+        // Add toolbar at top - always spans full window width
         containerView.addSubview(toolbarView)
         toolbarView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -82,21 +93,64 @@ final class MarkupEditorController: NSWindowController {
             toolbarView.heightAnchor.constraint(equalToConstant: 44)
         ])
         
-        // Add canvas below toolbar
-        containerView.addSubview(canvasView)
-        canvasView.translatesAutoresizingMaskIntoConstraints = false
+        // Create canvas container for centering
+        let canvasContainer = NSView()
+        canvasContainer.wantsLayer = true
+        canvasContainer.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        
+        containerView.addSubview(canvasContainer)
+        canvasContainer.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            canvasView.topAnchor.constraint(equalTo: toolbarView.bottomAnchor),
-            canvasView.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
-            canvasView.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
-            canvasView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor)
+            canvasContainer.topAnchor.constraint(equalTo: toolbarView.bottomAnchor),
+            canvasContainer.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            canvasContainer.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
+            canvasContainer.bottomAnchor.constraint(equalTo: containerView.bottomAnchor)
         ])
+        
+        // Add canvas to the container
+        canvasContainer.addSubview(canvasView)
+        canvasView.translatesAutoresizingMaskIntoConstraints = false
+        
+        let imageSize = baseImage.size
+        
+        if imageSize.width < Self.minimumWindowWidth {
+            // Center the canvas when image is narrower than minimum width
+            NSLayoutConstraint.activate([
+                canvasView.centerXAnchor.constraint(equalTo: canvasContainer.centerXAnchor),
+                canvasView.topAnchor.constraint(equalTo: canvasContainer.topAnchor),
+                canvasView.bottomAnchor.constraint(equalTo: canvasContainer.bottomAnchor),
+                canvasView.widthAnchor.constraint(equalToConstant: imageSize.width)
+            ])
+        } else {
+            // Fill the container when image is wider than minimum width
+            NSLayoutConstraint.activate([
+                canvasView.topAnchor.constraint(equalTo: canvasContainer.topAnchor),
+                canvasView.leadingAnchor.constraint(equalTo: canvasContainer.leadingAnchor),
+                canvasView.trailingAnchor.constraint(equalTo: canvasContainer.trailingAnchor),
+                canvasView.bottomAnchor.constraint(equalTo: canvasContainer.bottomAnchor)
+            ])
+        }
         
         window.contentView = containerView
         
         // Ensure delegate is properly set after layout
         canvasView.delegate = self
         toolbarView.delegate = self
+        
+        // Set up appearance change observers for the container background
+        setupContainerAppearanceObserver(for: containerView, canvasContainer: canvasContainer)
+    }
+    
+    private func setupContainerAppearanceObserver(for containerView: NSView, canvasContainer: NSView) {
+        // Listen for system appearance changes to update background colors
+        DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil,
+            queue: .main
+        ) { [weak containerView, weak canvasContainer] _ in
+            containerView?.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+            canvasContainer?.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        }
     }
     
     func show() {
@@ -215,36 +269,46 @@ extension MarkupEditorController: MarkupCanvasDelegate {
             return
         }
         
-        // Handle keyboard shortcuts for tool switching
-        if let keyCharacter = event.charactersIgnoringModifiers?.lowercased() {
-            for tool in MarkupTool.allCases {
-                if keyCharacter == tool.keyboardShortcut {
-                    print("🔧 Tool changed to: \(tool)")
-                    currentTool = tool
-                    
-                    // Clear selections when switching to move tool for clean slate
-                    if tool == .move {
-                        for element in markupElements {
-                            element.isSelected = false
-                        }
-                        selectedElement = nil
-                        canvasView.needsDisplay = true
-                    }
-                    
-                    toolbarView.setSelectedTool(tool)
-                    canvasView.setCurrentTool(tool)
-                    return
-                }
+        // Handle command+key combinations first (before tool shortcuts)
+        if event.modifierFlags.contains(.command) {
+            if event.keyCode == 8 { // Cmd+C
+                copyCompositeToClipboard()
+                return
+            } else if event.keyCode == 13 { // Cmd+W
+                window?.close()
+                return
             }
         }
         
-        // Handle other keyboard shortcuts
+        // Handle other non-command keyboard shortcuts
         if event.keyCode == 51 { // Delete key
             deleteSelectedElement()
-        } else if event.keyCode == 8 && event.modifierFlags.contains(.command) { // Cmd+C
-            copyCompositeToClipboard()
-        } else if event.keyCode == 13 && event.modifierFlags.contains(.command) { // Cmd+W
-            window?.close()
+            return
+        }
+        
+        // Handle keyboard shortcuts for tool switching (only when no modifier keys are pressed)
+        if !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.option) && !event.modifierFlags.contains(.control) {
+            if let keyCharacter = event.charactersIgnoringModifiers?.lowercased() {
+                for tool in MarkupTool.allCases {
+                    if keyCharacter == tool.keyboardShortcut {
+                        print("🔧 Tool changed to: \(tool)")
+                        currentTool = tool
+                        
+                        // Clear selections when switching to move tool for clean slate
+                        if tool == .move {
+                            for element in markupElements {
+                                element.isSelected = false
+                            }
+                            selectedElement = nil
+                            canvasView.needsDisplay = true
+                        }
+                        
+                        toolbarView.setSelectedTool(tool)
+                        canvasView.setCurrentTool(tool)
+                        return
+                    }
+                }
+            }
         }
     }
     
@@ -354,6 +418,15 @@ extension MarkupEditorController: MarkupCanvasDelegate {
     }
     
     private func handleStepCounterStamp(at point: CGPoint) {
+        // Clamp the center point to ensure the stamp doesn't extend beyond image bounds
+        // Step counter has a radius of 20 pixels
+        let radius: CGFloat = 20.0
+        let imageRect = NSRect(origin: .zero, size: baseImage.size)
+        let clampedPoint = CGPoint(
+            x: max(radius, min(point.x, imageRect.maxX - radius)),
+            y: max(radius, min(point.y, imageRect.maxY - radius))
+        )
+        
         // Calculate the next step number based on existing step counter elements
         let existingStepNumbers = markupElements.compactMap { element in
             return (element as? StepCounterElement)?.stepNumber
@@ -362,8 +435,8 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         // Find the highest existing number and add 1
         let nextStepNumber = (existingStepNumbers.max() ?? 0) + 1
         
-        // Create the new step counter element
-        let stepCounter = StepCounterElement(centerPoint: point, stepNumber: nextStepNumber, color: MarkupColorManager.shared.currentColor)
+        // Create the new step counter element with clamped position
+        let stepCounter = StepCounterElement(centerPoint: clampedPoint, stepNumber: nextStepNumber, color: MarkupColorManager.shared.currentColor)
         markupElements.append(stepCounter)
         
         // Update the canvas view's elements
@@ -372,8 +445,15 @@ extension MarkupEditorController: MarkupCanvasDelegate {
     }
     
     private func handleTextInput(at point: CGPoint) {
-        // Start text editing at the clicked location
-        canvasView.startTextEditing(at: point)
+        // Clamp the text position to ensure it starts within image bounds
+        let imageRect = NSRect(origin: .zero, size: baseImage.size)
+        let clampedPoint = CGPoint(
+            x: max(0, min(point.x, imageRect.maxX)),
+            y: max(0, min(point.y, imageRect.maxY))
+        )
+        
+        // Start text editing at the clamped location
+        canvasView.startTextEditing(at: clampedPoint)
         // Note: Synchronization will happen after text editing is complete
     }
     
@@ -500,6 +580,15 @@ final class MarkupCanvasView: NSView {
     func setCurrentTool(_ tool: MarkupTool) {
         currentTool = tool
         needsDisplay = true
+    }
+    
+    /// Clamps a point to stay within the image bounds
+    private func clampToImageBounds(_ point: CGPoint) -> CGPoint {
+        let imageRect = NSRect(origin: .zero, size: baseImage.size)
+        return CGPoint(
+            x: max(0, min(point.x, imageRect.maxX)),
+            y: max(0, min(point.y, imageRect.maxY))
+        )
     }
     
     private func setupView() {
@@ -705,7 +794,8 @@ final class MarkupCanvasView: NSView {
     
     // MARK: - Mouse Events
     override func mouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
+        let rawPoint = convert(event.locationInWindow, from: nil)
+        let point = clampToImageBounds(rawPoint)
         dragStartPoint = point
         currentDragPoint = point
         isDrawing = true
@@ -718,7 +808,8 @@ final class MarkupCanvasView: NSView {
     
     override func mouseDragged(with event: NSEvent) {
         guard isDrawing else { return }
-        currentDragPoint = convert(event.locationInWindow, from: nil)
+        let rawPoint = convert(event.locationInWindow, from: nil)
+        currentDragPoint = clampToImageBounds(rawPoint)
         
         // Update selection rect for selection tool
         if currentTool == .selection, let startPoint = dragStartPoint, let endPoint = currentDragPoint {
@@ -738,7 +829,8 @@ final class MarkupCanvasView: NSView {
             return
         }
         
-        let endPoint = convert(event.locationInWindow, from: nil)
+        let rawEndPoint = convert(event.locationInWindow, from: nil)
+        let endPoint = clampToImageBounds(rawEndPoint)
         isDrawing = false
         dragStartPoint = nil
         currentDragPoint = nil
@@ -1040,15 +1132,37 @@ final class MarkupToolbarView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         setupToolbar()
+        setupAppearanceObserver()
     }
     
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
     
+    deinit {
+        DistributedNotificationCenter.default().removeObserver(self)
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    private func setupAppearanceObserver() {
+        // Listen for system appearance changes using the app's notification
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(appearanceDidChange),
+            name: Notification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil
+        )
+    }
+    
+    @objc private func appearanceDidChange() {
+        DispatchQueue.main.async { [weak self] in
+            self?.updateAppearance()
+        }
+    }
+    
     private func setupToolbar() {
         wantsLayer = true
-        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        updateToolbarBackground()
         
         let stackView = NSStackView()
         stackView.orientation = .horizontal
@@ -1093,6 +1207,31 @@ final class MarkupToolbarView: NSView {
         updateToolSelection()
         updateThicknessButton()
         updateColorButton()
+    }
+    
+    private func updateToolbarBackground() {
+        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+    }
+    
+    private func updateAppearance() {
+        updateToolbarBackground()
+        updateToolSelection()
+        updateThicknessButton()
+        updateColorButton()
+        
+        // Update thickness and color button appearance
+        updateThicknessButtonAppearance(thicknessButton)
+        updateColorButtonAppearance(colorButton)
+        
+        // Update separator color - find the separator view in the stack view
+        if let stackView = subviews.first as? NSStackView {
+            for subview in stackView.arrangedSubviews {
+                if subview.widthAnchor.constraint(equalToConstant: 1).isActive {
+                    subview.layer?.backgroundColor = NSColor.separatorColor.cgColor
+                    break
+                }
+            }
+        }
     }
     
     private func createToolButton(for tool: MarkupTool) -> NSButton {
@@ -1145,13 +1284,15 @@ final class MarkupToolbarView: NSView {
             let isSelected = (tool == selectedTool)
             button.state = isSelected ? .on : .off
             
-            // Custom visual styling for selected state
+            // Use adaptive colors for better dark mode support
             if isSelected {
                 button.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+                // Use white text on the accent color, which works in both light and dark mode
                 button.contentTintColor = NSColor.white
             } else {
                 button.layer?.backgroundColor = NSColor.clear.cgColor
-                button.contentTintColor = NSColor.controlTextColor
+                // Use labelColor which automatically adapts to light/dark mode
+                button.contentTintColor = NSColor.labelColor
             }
         }
     }
@@ -1169,14 +1310,18 @@ final class MarkupToolbarView: NSView {
         button.widthAnchor.constraint(equalToConstant: 40).isActive = true
         button.heightAnchor.constraint(equalToConstant: 32).isActive = true
         
-        // Style the button
+        // Style the button with adaptive colors
         button.wantsLayer = true
         button.layer?.cornerRadius = 4
         button.layer?.borderWidth = 1
-        button.layer?.borderColor = NSColor.controlColor.cgColor
-        button.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        updateThicknessButtonAppearance(button)
         
         return button
+    }
+    
+    private func updateThicknessButtonAppearance(_ button: NSButton) {
+        button.layer?.borderColor = NSColor.separatorColor.cgColor
+        button.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
     }
     
     private func createColorButton() -> NSButton {
@@ -1192,55 +1337,18 @@ final class MarkupToolbarView: NSView {
         button.widthAnchor.constraint(equalToConstant: 40).isActive = true
         button.heightAnchor.constraint(equalToConstant: 32).isActive = true
         
-        // Style the button
+        // Style the button with adaptive colors
         button.wantsLayer = true
         button.layer?.cornerRadius = 4
         button.layer?.borderWidth = 1
-        button.layer?.borderColor = NSColor.controlColor.cgColor
+        updateColorButtonAppearance(button)
         
         return button
     }
     
-    @objc private func colorButtonPressed(_ sender: NSButton) {
-        // Create and show color picker
-        let colorPanel = NSColorPanel.shared
-        colorPanel.color = MarkupColorManager.shared.currentColor
-        colorPanel.isContinuous = true // Enable continuous updates for real-time color changes
-        
-        // Remove any existing observer first to avoid duplicates
-        NotificationCenter.default.removeObserver(
-            self,
-            name: NSColorPanel.colorDidChangeNotification,
-            object: colorPanel
-        )
-        
-        // Set up a notification observer for color changes
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(colorPanelColorDidChange(_:)),
-            name: NSColorPanel.colorDidChangeNotification,
-            object: colorPanel
-        )
-        
-        colorPanel.makeKeyAndOrderFront(nil)
-    }
-    
-    @objc private func colorPanelColorDidChange(_ notification: Notification) {
-        guard let colorPanel = notification.object as? NSColorPanel else { return }
-        let newColor = colorPanel.color
-        delegate?.toolbarDidSelectColor(newColor)
-        updateColorButton()
-        
-        // Don't remove observer here - let it continue listening for more color changes
-        // Observer will be removed when the view controller is deallocated or when setting up a new color panel session
-    }
-    
-    private func updateColorButton() {
-        let currentColor = MarkupColorManager.shared.currentColor
-        colorButton.layer?.backgroundColor = currentColor.cgColor
-        
-        // Add a subtle border to make the color visible even for light colors
-        colorButton.layer?.borderColor = NSColor.controlColor.cgColor
+    private func updateColorButtonAppearance(_ button: NSButton) {
+        button.layer?.borderColor = NSColor.separatorColor.cgColor
+        // Background color will be set by updateColorButton method
     }
     
     @objc private func thicknessButtonPressed(_ sender: NSButton) {
@@ -1293,10 +1401,10 @@ final class MarkupToolbarView: NSView {
         let lineView = ThicknessPreviewView(thickness: thickness)
         lineView.frame = NSRect(x: 8, y: 6, width: 80, height: 12)
         
-        // Add label with point size
+        // Add label with point size using adaptive text color
         let label = NSTextField(labelWithString: "\(Int(thickness))pt")
         label.font = NSFont.systemFont(ofSize: 11)
-        label.textColor = NSColor.controlTextColor
+        label.textColor = NSColor.labelColor  // Use labelColor for better dark mode support
         label.frame = NSRect(x: 92, y: 4, width: 25, height: 16)
         
         // Add visual elements to the button
@@ -1317,7 +1425,51 @@ final class MarkupToolbarView: NSView {
         activeMenu?.cancelTracking()
     }
     
+    @objc private func colorButtonPressed(_ sender: NSButton) {
+        // Create and show color picker
+        let colorPanel = NSColorPanel.shared
+        colorPanel.color = MarkupColorManager.shared.currentColor
+        colorPanel.isContinuous = true // Enable continuous updates for real-time color changes
+        
+        // Remove any existing observer first to avoid duplicates
+        NotificationCenter.default.removeObserver(
+            self,
+            name: NSColorPanel.colorDidChangeNotification,
+            object: colorPanel
+        )
+        
+        // Set up a notification observer for color changes
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(colorPanelColorDidChange(_:)),
+            name: NSColorPanel.colorDidChangeNotification,
+            object: colorPanel
+        )
+        
+        colorPanel.makeKeyAndOrderFront(nil)
+    }
+    
+    @objc private func colorPanelColorDidChange(_ notification: Notification) {
+        guard let colorPanel = notification.object as? NSColorPanel else { return }
+        let newColor = colorPanel.color
+        delegate?.toolbarDidSelectColor(newColor)
+        updateColorButton()
+        
+        // Don't remove observer here - let it continue listening for more color changes
+        // Observer will be removed when the view controller is deallocated or when setting up a new color panel session
+    }
+    
+    private func updateColorButton() {
+        let currentColor = MarkupColorManager.shared.currentColor
+        colorButton.layer?.backgroundColor = currentColor.cgColor
+        
+        // Use adaptive border color for better dark mode support
+        colorButton.layer?.borderColor = NSColor.separatorColor.cgColor
+    }
+    
     private func updateThicknessButton() {
+        updateThicknessButtonAppearance(thicknessButton)
+        
         // Create a custom image showing the current line thickness
         let thickness = MarkupLineThicknessManager.shared.currentThickness
         let image = createLineThicknessImage(thickness: thickness)
@@ -1375,8 +1527,8 @@ class ThicknessPreviewView: NSView {
         
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         
-        // Draw the line preview
-        context.setStrokeColor(NSColor.controlTextColor.cgColor)
+        // Draw the line preview using adaptive colors
+        context.setStrokeColor(NSColor.labelColor.cgColor)  // Use labelColor for better dark mode support
         context.setLineWidth(thickness)
         context.setLineCap(.round)
         
