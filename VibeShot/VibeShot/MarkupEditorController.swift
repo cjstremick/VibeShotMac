@@ -498,6 +498,80 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         let composite = createCompositeImage()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.writeObjects([composite])
+        
+        // Show feedback to user
+        showCopyFeedback()
+    }
+    
+    private func showCopyFeedback() {
+        guard let window = window else { return }
+        
+        // Create feedback view
+        let feedbackView = NSView()
+        feedbackView.wantsLayer = true
+        feedbackView.layer?.cornerRadius = 8
+        feedbackView.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.9).cgColor
+        
+        // Create label
+        let label = NSTextField(labelWithString: "Copied to Clipboard")
+        label.font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        label.textColor = NSColor.white
+        label.alignment = .center
+        
+        // Create icon (checkmark)
+        let checkmarkImage = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "Success") ?? NSImage()
+        let imageView = NSImageView(image: checkmarkImage)
+        imageView.contentTintColor = NSColor.white
+        
+        // Create stack view
+        let stackView = NSStackView(views: [imageView, label])
+        stackView.orientation = NSUserInterfaceLayoutOrientation.horizontal
+        stackView.spacing = 8
+        stackView.alignment = NSLayoutConstraint.Attribute.centerY
+        
+        // Add stack view to feedback view
+        feedbackView.addSubview(stackView)
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            stackView.centerXAnchor.constraint(equalTo: feedbackView.centerXAnchor),
+            stackView.centerYAnchor.constraint(equalTo: feedbackView.centerYAnchor),
+            feedbackView.widthAnchor.constraint(greaterThanOrEqualTo: stackView.widthAnchor, constant: 20),
+            feedbackView.heightAnchor.constraint(greaterThanOrEqualTo: stackView.heightAnchor, constant: 12),
+            imageView.widthAnchor.constraint(equalToConstant: 16),
+            imageView.heightAnchor.constraint(equalToConstant: 16)
+        ])
+        
+        // Add to window content view
+        window.contentView?.addSubview(feedbackView)
+        feedbackView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            feedbackView.centerXAnchor.constraint(equalTo: window.contentView!.centerXAnchor),
+            feedbackView.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 50)
+        ])
+        
+        // Initial state - hidden
+        feedbackView.alphaValue = 0
+        feedbackView.layer?.transform = CATransform3DMakeScale(0.8, 0.8, 1)
+        
+        // Animate in
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.3
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            feedbackView.animator().alphaValue = 1
+            feedbackView.layer?.transform = CATransform3DIdentity
+        } completionHandler: {
+            // Animate out after delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.3
+                    context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                    feedbackView.animator().alphaValue = 0
+                    feedbackView.layer?.transform = CATransform3DMakeScale(0.9, 0.9, 1)
+                } completionHandler: {
+                    feedbackView.removeFromSuperview()
+                }
+            }
+        }
     }
     
     private func createCompositeImage() -> NSImage {
