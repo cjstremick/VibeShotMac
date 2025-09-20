@@ -62,13 +62,13 @@ final class MarkupLineThicknessManager {
 }
 
 // MARK: - Markup Tool Types
-enum MarkupTool: CaseIterable {
-    case selection
-    case move
-    case arrow
-    case rectangle
-    case stepCounter
-    case text
+enum MarkupTool: Int, CaseIterable {
+    case selection = 0
+    case move = 1
+    case arrow = 2
+    case rectangle = 3
+    case stepCounter = 4
+    case text = 5
     
     var displayName: String {
         switch self {

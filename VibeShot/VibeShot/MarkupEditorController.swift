@@ -13,25 +13,25 @@ final class MarkupEditorController: NSWindowController {
     private var elementStartPosition: CGPoint?
     
     private var canvasView: MarkupCanvasView!
-    private var toolbarView: MarkupToolbarView!
+    private var titleBarToolbar: TitleBarToolbarView!
     
-    // Minimum window width to ensure toolbar doesn't get clipped
-    private static let minimumWindowWidth: CGFloat = 600
+    // Minimum window width to ensure title bar toolbar doesn't get clipped
+    private static let minimumWindowWidth: CGFloat = 700
     
     init(baseImage: NSImage) {
+        print("DEBUG: MarkupEditorController init called")
         self.baseImage = baseImage
         
         // Create views first
         self.canvasView = MarkupCanvasView(baseImage: baseImage)
-        self.toolbarView = MarkupToolbarView()
+        self.titleBarToolbar = TitleBarToolbarView()
         
         // Create window with minimum width consideration
         let imageSize = baseImage.size
-        let toolbarHeight: CGFloat = 44
         
-        // Ensure window is at least the minimum width
+        // Ensure window is at least the minimum width for title bar toolbar
         let windowWidth = max(imageSize.width, Self.minimumWindowWidth)
-        let windowSize = NSSize(width: windowWidth, height: imageSize.height + toolbarHeight)
+        let windowSize = NSSize(width: windowWidth, height: imageSize.height)
         
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: windowSize),
@@ -44,7 +44,7 @@ final class MarkupEditorController: NSWindowController {
         
         // Set delegates immediately after creation
         canvasView.delegate = self
-        toolbarView.delegate = self
+        titleBarToolbar.delegate = self
         
         setupWindow()
         setupLayout()
@@ -67,11 +67,15 @@ final class MarkupEditorController: NSWindowController {
     }
     
     private func setupWindow() {
+        print("DEBUG: setupWindow called")
         guard let window = window else { return }
         
         window.title = "VibeShot Editor"
         window.isReleasedWhenClosed = false
         window.center()
+        
+        // Configure title bar toolbar
+        configureTitleBarToolbar()
         
         // Don't set first responder here - it will be set after layout is complete
     }
@@ -83,25 +87,16 @@ final class MarkupEditorController: NSWindowController {
         containerView.wantsLayer = true
         containerView.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         
-        // Add toolbar at top - always spans full window width
-        containerView.addSubview(toolbarView)
-        toolbarView.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            toolbarView.topAnchor.constraint(equalTo: containerView.topAnchor),
-            toolbarView.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
-            toolbarView.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
-            toolbarView.heightAnchor.constraint(equalToConstant: 44)
-        ])
-        
-        // Create canvas container for centering
+        // Create canvas container for centering (toolbar is now in title bar)
         let canvasContainer = NSView()
         canvasContainer.wantsLayer = true
-        canvasContainer.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         
         containerView.addSubview(canvasContainer)
         canvasContainer.translatesAutoresizingMaskIntoConstraints = false
+        
+        // Canvas container fills the entire window (no traditional toolbar)
         NSLayoutConstraint.activate([
-            canvasContainer.topAnchor.constraint(equalTo: toolbarView.bottomAnchor),
+            canvasContainer.topAnchor.constraint(equalTo: containerView.topAnchor),
             canvasContainer.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
             canvasContainer.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
             canvasContainer.bottomAnchor.constraint(equalTo: containerView.bottomAnchor)
@@ -135,7 +130,6 @@ final class MarkupEditorController: NSWindowController {
         
         // Ensure delegate is properly set after layout
         canvasView.delegate = self
-        toolbarView.delegate = self
         
         // Set up appearance change observers for the container background
         setupContainerAppearanceObserver(for: containerView, canvasContainer: canvasContainer)
@@ -151,6 +145,43 @@ final class MarkupEditorController: NSWindowController {
             containerView?.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
             canvasContainer?.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         }
+    }
+    
+    private func configureTitleBarToolbar() {
+        guard let window = window else { 
+            print("DEBUG: Window is nil in configureTitleBarToolbar")
+            return 
+        }
+        
+        print("DEBUG: Creating title bar toolbar")
+        print("DEBUG: Toolbar frame: \(titleBarToolbar.frame)")
+        print("DEBUG: Toolbar intrinsic size: \(titleBarToolbar.intrinsicContentSize)")
+        
+        // Enable layer for proper rendering
+        titleBarToolbar.wantsLayer = true
+        
+        // CRITICAL: Ensure the toolbar has the correct frame based on intrinsic content size
+        let intrinsicSize = titleBarToolbar.intrinsicContentSize
+        titleBarToolbar.frame = NSRect(origin: .zero, size: intrinsicSize)
+        
+        // Create title bar accessory view controller
+        let accessoryViewController = NSTitlebarAccessoryViewController()
+        accessoryViewController.view = titleBarToolbar
+        accessoryViewController.layoutAttribute = .trailing
+        
+        // Add the accessory view controller to the window
+        window.addTitlebarAccessoryViewController(accessoryViewController)
+        
+        print("DEBUG: Title bar accessory view controller added")
+        print("DEBUG: Window titlebar accessories count: \(window.titlebarAccessoryViewControllers.count)")
+        print("DEBUG: Final toolbar frame: \(titleBarToolbar.frame)")
+        
+        // Initialize title bar toolbar state
+        titleBarToolbar.updateColor(MarkupColorManager.shared.currentColor)
+        titleBarToolbar.updateThickness(MarkupLineThicknessManager.shared.currentThickness)
+        titleBarToolbar.selectTool(currentTool)
+        
+        print("DEBUG: Title bar toolbar configuration complete")
     }
     
     func show() {
@@ -177,6 +208,9 @@ extension MarkupEditorController: MarkupToolbarDelegate {
         }
         selectedElement = nil
         
+        // Update title bar toolbar selection
+        titleBarToolbar.selectTool(tool)
+        
         // Communicate the tool change to the canvas
         canvasView.setCurrentTool(tool)
         canvasView.needsDisplay = true
@@ -186,8 +220,21 @@ extension MarkupEditorController: MarkupToolbarDelegate {
         // Store the new color for future elements
         MarkupColorManager.shared.currentColor = color
         
+        // Update title bar toolbar
+        titleBarToolbar.updateColor(color)
+        
         // No need to refresh canvas - existing elements keep their colors
         // Only new elements will use the new color
+    }
+    
+    func thicknessButtonClicked(_ sender: NSButton) {
+        // This will be implemented to show thickness selection
+        // For now, we'll handle it like the old toolbar
+    }
+    
+    func colorButtonClicked(_ sender: NSButton) {
+        // This will be implemented to show color selection
+        // For now, we'll handle it like the old toolbar
     }
 }
 
@@ -299,7 +346,7 @@ extension MarkupEditorController: MarkupCanvasDelegate {
                             canvasView.needsDisplay = true
                         }
                         
-                        toolbarView.setSelectedTool(tool)
+                        titleBarToolbar.selectTool(tool)
                         canvasView.setCurrentTool(tool)
                         return
                     }
@@ -1091,9 +1138,44 @@ extension MarkupCanvasView: MarkupTextViewDelegate {
 protocol MarkupToolbarDelegate: AnyObject {
     func toolbarDidSelectTool(_ tool: MarkupTool)
     func toolbarDidSelectColor(_ color: NSColor)
+    func thicknessButtonClicked(_ sender: NSButton)
+    func colorButtonClicked(_ sender: NSButton)
 }
 
-final class MarkupToolbarView: NSView {
+// MARK: - Thickness Preview View
+
+class ThicknessPreviewView: NSView {
+    private let thickness: CGFloat
+    
+    init(thickness: CGFloat) {
+        self.thickness = thickness
+        super.init(frame: .zero)
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        
+        context.setStrokeColor(NSColor.labelColor.cgColor)
+        context.setLineWidth(thickness)
+        context.setLineCap(.round)
+        
+        let y = bounds.midY
+        let startX = bounds.minX + 4
+        let endX = bounds.maxX - 4
+        
+        context.move(to: CGPoint(x: startX, y: y))
+        context.addLine(to: CGPoint(x: endX, y: y))
+        context.strokePath()
+    }
+}
+
+final class TitleBarToolbarView: NSView {
     weak var delegate: MarkupToolbarDelegate?
     
     private var selectedTool: MarkupTool = .arrow  // Match the controller's default
@@ -1104,8 +1186,16 @@ final class MarkupToolbarView: NSView {
     
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        
+        // CRITICAL: Disable autoresizing mask constraints FIRST
+        translatesAutoresizingMaskIntoConstraints = false
+        
         setupToolbar()
         setupAppearanceObserver()
+        
+        // Force layout after setup
+        needsLayout = true
+        layoutSubtreeIfNeeded()
     }
     
     required init?(coder: NSCoder) {
@@ -1143,6 +1233,9 @@ final class MarkupToolbarView: NSView {
         stackView.alignment = .centerY
         stackView.distribution = .fillProportionally
         
+        // CRITICAL: Disable autoresizing mask constraints on stack view too
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        
         // Add tool buttons
         for tool in MarkupTool.allCases {
             let button = createToolButton(for: tool)
@@ -1171,6 +1264,7 @@ final class MarkupToolbarView: NSView {
         stackView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             stackView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            stackView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16), // Add trailing padding to avoid rounded corner
             stackView.centerYAnchor.constraint(equalTo: centerYAnchor),
             stackView.heightAnchor.constraint(equalToConstant: 32)
         ])
@@ -1180,6 +1274,21 @@ final class MarkupToolbarView: NSView {
         updateToolSelection()
         updateThicknessButton()
         updateColorButton()
+    }
+    
+    override var intrinsicContentSize: NSSize {
+        // Calculate the actual size needed for the toolbar
+        // Each tool button (6): 40pt wide
+        // Separator: 1pt wide
+        // Thickness button: 40pt wide
+        // Color button: 40pt wide
+        // Spacing between items: 8pt each (7 spaces total: 6 tools + 1 separator + thickness + color = 8 items - 1 = 7 spaces)
+        // Leading padding: 12pt
+        // Trailing padding: 16pt (for rounded corner clearance)
+        let totalWidth = (6 * 40) + 1 + 40 + 40 + (7 * 8) + 12 + 16 // = 240 + 1 + 40 + 40 + 56 + 12 + 16 = 405pt
+        let size = NSSize(width: CGFloat(totalWidth), height: 32)
+        print("DEBUG: TitleBarToolbarView intrinsicContentSize calculated as: \(size)")
+        return size
     }
     
     private func updateToolbarBackground() {
@@ -1222,7 +1331,8 @@ final class MarkupToolbarView: NSView {
         button.toolTip = tool.displayNameWithShortcut
         
         button.imageScaling = .scaleProportionallyDown
-        button.bezelStyle = .regularSquare
+        button.bezelStyle = .texturedSquare  // Use textured square for title bar compatibility
+        button.isBordered = false
         button.setButtonType(.toggle)
         button.target = self
         button.action = #selector(toolButtonPressed(_:))
@@ -1234,10 +1344,11 @@ final class MarkupToolbarView: NSView {
         
         // Style the button better with clear visual states
         button.imagePosition = .imageOnly
-        button.isBordered = true
+        button.isBordered = false  // Keep borderless for transparent title bar style
         
-        // Add custom styling for better visual feedback
+        // Add transparent background styling for title bar
         button.wantsLayer = true
+        button.layer?.backgroundColor = NSColor.clear.cgColor
         button.layer?.cornerRadius = 4
         
         return button
@@ -1273,55 +1384,80 @@ final class MarkupToolbarView: NSView {
     private func createThicknessButton() -> NSButton {
         let button = NSButton()
         button.title = ""
-        button.bezelStyle = .regularSquare
+        button.bezelStyle = .texturedSquare  // Use textured square for title bar compatibility
+        button.isBordered = false  // Remove border for transparent title bar style
         button.setButtonType(.momentaryPushIn)
         button.target = self
         button.action = #selector(thicknessButtonPressed(_:))
         button.toolTip = "Line Thickness"
+        button.isEnabled = true  // Explicitly enable the button
+        
+        // Ensure AutoLayout works properly
+        button.translatesAutoresizingMaskIntoConstraints = false
         
         // Set button size
         button.widthAnchor.constraint(equalToConstant: 40).isActive = true
         button.heightAnchor.constraint(equalToConstant: 32).isActive = true
         
-        // Style the button with adaptive colors
+        // Style the button according to macOS HIG for title bar accessories
         button.wantsLayer = true
         button.layer?.cornerRadius = 4
-        button.layer?.borderWidth = 1
+        button.layer?.borderWidth = 0  // No border for title bar style
         updateThicknessButtonAppearance(button)
         
         return button
     }
     
     private func updateThicknessButtonAppearance(_ button: NSButton) {
-        button.layer?.borderColor = NSColor.separatorColor.cgColor
-        button.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        // Follow macOS HIG for title bar accessories - transparent background
+        button.layer?.backgroundColor = NSColor.clear.cgColor
+        button.layer?.borderColor = NSColor.clear.cgColor
+        
+        // Clear any existing subviews
+        button.subviews.removeAll()
+        
+        // Add thickness preview line
+        let currentThickness = MarkupLineThicknessManager.shared.currentThickness
+        let lineView = ThicknessPreviewView(thickness: currentThickness)
+        lineView.frame = NSRect(x: 8, y: (button.frame.height - 8) / 2, width: button.frame.width - 16, height: 8)
+        button.addSubview(lineView)
     }
     
     private func createColorButton() -> NSButton {
         let button = NSButton()
         button.title = ""
-        button.bezelStyle = .regularSquare
+        button.bezelStyle = .texturedSquare  // Use textured square for title bar compatibility
         button.setButtonType(.momentaryPushIn)
         button.target = self
         button.action = #selector(colorButtonPressed(_:))
         button.toolTip = "Choose Color"
+        button.isEnabled = true  // Explicitly enable the button
         
-        // Set button size
-        button.widthAnchor.constraint(equalToConstant: 40).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        // Ensure AutoLayout works properly
+        button.translatesAutoresizingMaskIntoConstraints = false
         
-        // Style the button with adaptive colors
+        // Set button size - make it smaller and more rectangular
+        button.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        
+        // Style the button according to macOS HIG for title bar accessories
         button.wantsLayer = true
-        button.layer?.cornerRadius = 4
-        button.layer?.borderWidth = 1
+        button.layer?.borderWidth = 0  // No border for title bar style
         updateColorButtonAppearance(button)
         
         return button
     }
     
     private func updateColorButtonAppearance(_ button: NSButton) {
-        button.layer?.borderColor = NSColor.separatorColor.cgColor
-        // Background color will be set by updateColorButton method
+        // Follow macOS HIG for title bar accessories - transparent background
+        button.layer?.backgroundColor = NSColor.clear.cgColor
+        button.layer?.borderColor = NSColor.clear.cgColor
+        button.layer?.cornerRadius = 6  // Smaller corner radius for rounded rectangle shape
+        
+        // Set up hover effects
+        button.layer?.masksToBounds = false
+        
+        // The color preview will be handled by updateColorButton method
     }
     
     @objc private func thicknessButtonPressed(_ sender: NSButton) {
@@ -1363,7 +1499,8 @@ final class MarkupToolbarView: NSView {
         let button = NSButton()
         button.frame = containerView.bounds
         button.title = ""
-        button.bezelStyle = .regularSquare
+        button.bezelStyle = .texturedSquare  // Use textured square for title bar compatibility
+        button.isBordered = false
         button.setButtonType(.momentaryPushIn)
         button.isBordered = false
         button.target = self
@@ -1433,102 +1570,38 @@ final class MarkupToolbarView: NSView {
     }
     
     private func updateColorButton() {
-        let currentColor = MarkupColorManager.shared.currentColor
-        colorButton.layer?.backgroundColor = currentColor.cgColor
+        // Clear any existing color preview subviews
+        colorButton.subviews.removeAll()
         
-        // Use adaptive border color for better dark mode support
-        colorButton.layer?.borderColor = NSColor.separatorColor.cgColor
+        // Create a color preview view with rounded corners
+        let colorPreview = NSView()
+        let currentColor = MarkupColorManager.shared.currentColor
+        colorPreview.wantsLayer = true
+        colorPreview.layer?.backgroundColor = currentColor.cgColor
+        colorPreview.layer?.cornerRadius = 4
+        colorPreview.layer?.borderWidth = 1
+        colorPreview.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.3).cgColor
+        
+        // Position the color preview in the center of the button
+        colorPreview.frame = NSRect(x: 4, y: 4, width: colorButton.frame.width - 8, height: colorButton.frame.height - 8)
+        colorButton.addSubview(colorPreview)
     }
     
     private func updateThicknessButton() {
+        // Update thickness button appearance
         updateThicknessButtonAppearance(thicknessButton)
-        
-        // Create a custom image showing the current line thickness
-        let thickness = MarkupLineThicknessManager.shared.currentThickness
-        let image = createLineThicknessImage(thickness: thickness)
-        thicknessButton.image = image
     }
     
-    private func createLineThicknessImage(thickness: CGFloat) -> NSImage {
-        let size = NSSize(width: 28, height: 20)
-        let image = NSImage(size: size)
-        
-        image.lockFocus()
-        
-        if let context = NSGraphicsContext.current?.cgContext {
-            // Clear background
-            context.clear(CGRect(origin: .zero, size: size))
-            
-            // Draw line preview
-            context.setStrokeColor(NSColor.controlTextColor.cgColor)
-            context.setLineWidth(thickness)
-            context.setLineCap(.round)
-            
-            let startPoint = CGPoint(x: 4, y: size.height / 2)
-            let endPoint = CGPoint(x: size.width - 4, y: size.height / 2)
-            
-            context.move(to: startPoint)
-            context.addLine(to: endPoint)
-            context.strokePath()
-        }
-        
-        image.unlockFocus()
-        return image
-    }
-    
-    func setSelectedTool(_ tool: MarkupTool) {
+    func selectTool(_ tool: MarkupTool) {
         selectedTool = tool
         updateToolSelection()
     }
-}
-
-// MARK: - Thickness Preview View
-class ThicknessPreviewView: NSView {
-    private let thickness: CGFloat
     
-    init(thickness: CGFloat) {
-        self.thickness = thickness
-        super.init(frame: .zero)
+    func updateColor(_ color: NSColor) {
+        updateColorButton()
     }
     
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        
-        guard let context = NSGraphicsContext.current?.cgContext else { return }
-        
-        // Draw the line preview using adaptive colors
-        context.setStrokeColor(NSColor.labelColor.cgColor)  // Use labelColor for better dark mode support
-        context.setLineWidth(thickness)
-        context.setLineCap(.round)
-        
-        let startPoint = CGPoint(x: 4, y: bounds.height / 2)
-        let endPoint = CGPoint(x: bounds.width - 4, y: bounds.height / 2)
-        
-        context.move(to: startPoint)
-        context.addLine(to: endPoint)
-        context.strokePath()
-    }
-}
-
-// MARK: - NSButton Extension for Menu Items
-extension NSButton {
-    func findEnclosingMenuItem() -> NSMenuItem? {
-        var view: NSView? = self.superview
-        while view != nil {
-            if let menu = view?.superview?.superview as? NSMenu {
-                // Find the menu item that contains this button
-                for item in menu.items {
-                    if item.view?.subviews.contains(where: { $0 == self || $0.subviews.contains(self) }) == true {
-                        return item
-                    }
-                }
-            }
-            view = view?.superview
-        }
-        return nil
+    func updateThickness(_ thickness: CGFloat) {
+        updateThicknessButton()
     }
 }
