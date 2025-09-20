@@ -25,16 +25,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
         
         let menu = NSMenu()
         
-        // Capture item
+        // About at the top (Apple standard)
+        menu.addItem(withTitle: "About VibeShot", action: #selector(showAbout), keyEquivalent: "")
+        
+        menu.addItem(.separator())
+        
+        // Main app functions
         let captureItem = NSMenuItem(title: "Capture Region", action: #selector(startRegionCapture), keyEquivalent: "s")
         captureItem.keyEquivalentModifierMask = [.option, .control, .shift]
         menu.addItem(captureItem)
         
         menu.addItem(.separator())
-        menu.addItem(withTitle: "About VibeShot", action: #selector(showAbout), keyEquivalent: "")
-        menu.addItem(withTitle: "Diagnostics", action: #selector(showDiagnostics), keyEquivalent: "")
         
-        menu.addItem(.separator())
+        // Quit at the bottom (Apple standard)
         menu.addItem(withTitle: "Quit", action: #selector(quit), keyEquivalent: "q")
         
         menu.items.forEach { $0.target = self }
@@ -85,37 +88,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
     @objc private func showAbout() {
         let alert = NSAlert()
         alert.messageText = "About VibeShot"
+        
+        // Add the app icon to the alert
+        if let appIcon = NSApp.applicationIconImage {
+            alert.icon = appIcon
+        }
+        
         alert.informativeText = """
 VibeShot v1.0
-A lightweight, fast screenshot & markup utility
+A simple screenshot capture and markup app made 100% with vibe coding.
 
-Copyright © 2025. All rights reserved.
-
-Attribution Placeholder:
-• ScreenCaptureKit framework
-• SwiftUI framework
-• Additional dependencies TBD
+Copyright Cj Stremick
 """
         alert.addButton(withTitle: "OK")
         alert.runModal()
-    }
-    
-    @objc private func showDiagnostics() {
-        let preflight = CGPreflightScreenCaptureAccess()
-        let alert = NSAlert()
-        alert.messageText = "Diagnostics"
-        alert.informativeText = """
-Bundle: \(Bundle.main.bundleIdentifier ?? "N/A")
-Version: \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown")
-Build: \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown")
-ScreenRecordingPreflight: \(preflight)
-SCKitAvailable: \(screenCaptureKitAvailable ? "yes" : "no")
-"""
-        alert.runModal()
-    }
-    
-    private var screenCaptureKitAvailable: Bool {
-        if #available(macOS 13.0, *) { return true } else { return false }
     }
     
     private func showTransientAlert(title: String, text: String) {

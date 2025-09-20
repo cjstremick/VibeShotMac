@@ -194,7 +194,6 @@ extension MarkupEditorController: MarkupToolbarDelegate {
 // MARK: - MarkupCanvasDelegate
 extension MarkupEditorController: MarkupCanvasDelegate {
     func canvasDidStartDrawing(at point: CGPoint) {
-        print("🖱️ Canvas click at \(point) with tool: \(currentTool)")
         switch currentTool {
         case .selection:
             handleSelectionAt(point)
@@ -288,13 +287,10 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         
         // Handle keyboard shortcuts for tool switching (only when no modifier keys are pressed)
         if !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.option) && !event.modifierFlags.contains(.control) {
-            if let keyCharacter = event.charactersIgnoringModifiers?.lowercased() {
+                if let keyCharacter = event.charactersIgnoringModifiers?.lowercased() {
                 for tool in MarkupTool.allCases {
                     if keyCharacter == tool.keyboardShortcut {
-                        print("🔧 Tool changed to: \(tool)")
-                        currentTool = tool
-                        
-                        // Clear selections when switching to move tool for clean slate
+                        currentTool = tool                        // Clear selections when switching to move tool for clean slate
                         if tool == .move {
                             for element in markupElements {
                                 element.isSelected = false
@@ -317,13 +313,11 @@ extension MarkupEditorController: MarkupCanvasDelegate {
     }
     
     func canvasDidSelectElement(_ element: any MarkupElement) {
-        print("🎯 Canvas notified of element selection: \(type(of: element))")
         selectedElement = element
         canvasView.needsDisplay = true
     }
     
     private func handleSelectionAt(_ point: CGPoint) {
-        print("🎯 Selection at point: \(point)")
         // First deselect all elements
         for element in markupElements {
             element.isSelected = false
@@ -332,24 +326,17 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         
         // Find topmost element at point (reverse order for topmost)
         for (_, element) in markupElements.reversed().enumerated() {
-            print("🎯 Checking element \(type(of: element)) at bounds: \(element.bounds)")
             if element.contains(point: point) {
-                print("🎯 Found element at point! Selecting: \(type(of: element))")
                 selectedElement = element
                 element.isSelected = true
                 break
             }
         }
         
-        if selectedElement == nil {
-            print("🎯 No element found at selection point")
-        }
-        
         canvasView.needsDisplay = true
     }
     
     private func handleMoveStart(at point: CGPoint) {
-        print("🔍 Move start at point: \(point)")
         moveStartPoint = point
         
         // First, deselect all elements
@@ -360,9 +347,7 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         
         // Find element at point to select and move
         for (_, element) in markupElements.reversed().enumerated() {
-            print("🔍 Checking element \(type(of: element)) at bounds: \(element.bounds)")
             if element.contains(point: point) {
-                print("🔍 Found element at point! Selecting and starting move: \(type(of: element))")
                 selectedElement = element
                 element.isSelected = true
                 elementStartPosition = element.bounds.origin
@@ -371,23 +356,19 @@ extension MarkupEditorController: MarkupCanvasDelegate {
             }
         }
         
-        print("🔍 No element found at move point")
         canvasView.needsDisplay = true
     }
     
     private func handleMoveFinish(from startPoint: CGPoint, to endPoint: CGPoint) {
-        print("🔍 Move finish from \(startPoint) to \(endPoint)")
         guard let selected = selectedElement,
               let moveStart = moveStartPoint,
               let _ = elementStartPosition else { 
-            print("🔍 Move finish failed - missing: selected=\(selectedElement != nil), moveStart=\(moveStartPoint != nil), elementStartPosition=\(elementStartPosition != nil)")
             return 
         }
         
         // Calculate the delta movement
         let deltaX = endPoint.x - moveStart.x
         let deltaY = endPoint.y - moveStart.y
-        print("🔍 Moving element by delta: (\(deltaX), \(deltaY))")
         
         // Apply movement based on element type
         moveElement(selected, deltaX: deltaX, deltaY: deltaY)
@@ -400,19 +381,14 @@ extension MarkupEditorController: MarkupCanvasDelegate {
     }
     
     private func moveElement(_ element: any MarkupElement, deltaX: CGFloat, deltaY: CGFloat) {
-        print("🔍 Moving element type: \(type(of: element)) by (\(deltaX), \(deltaY))")
         // Move different element types
         if let arrow = element as? ArrowElement {
-            print("🔍 Moving arrow element")
             arrow.move(by: CGPoint(x: deltaX, y: deltaY))
         } else if let rectangle = element as? RectangleElement {
-            print("🔍 Moving rectangle element")
             rectangle.move(by: CGPoint(x: deltaX, y: deltaY))
         } else if let stepCounter = element as? StepCounterElement {
-            print("🔍 Moving step counter element")
             stepCounter.move(by: CGPoint(x: deltaX, y: deltaY))
         } else if let text = element as? TextElement {
-            print("🔍 Moving text element")
             text.move(by: CGPoint(x: deltaX, y: deltaY))
         }
     }
@@ -848,8 +824,6 @@ final class MarkupCanvasView: NSView {
     private func handleRectangleSelection() {
         guard let rect = selectionRect else { return }
         
-        print("📦 Rectangle selection with rect: \(rect)")
-        
         // Clear previous selections
         for element in markupElements {
             element.isSelected = false
@@ -861,7 +835,6 @@ final class MarkupCanvasView: NSView {
             if element.bounds.intersects(rect) {
                 element.isSelected = true
                 selectedElements.append(element)
-                print("📦 Selected element via rectangle: \(type(of: element))")
             }
         }
         
