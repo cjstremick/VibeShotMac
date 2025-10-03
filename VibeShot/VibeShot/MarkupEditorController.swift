@@ -148,9 +148,9 @@ final class MarkupEditorController: NSWindowController {
     }
     
     private func configureTitleBarToolbar() {
-        guard let window = window else { 
+        guard let window = window else {
             print("DEBUG: Window is nil in configureTitleBarToolbar")
-            return 
+            return
         }
         
         print("DEBUG: Creating title bar toolbar")
@@ -334,7 +334,7 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         
         // Handle keyboard shortcuts for tool switching (only when no modifier keys are pressed)
         if !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.option) && !event.modifierFlags.contains(.control) {
-                if let keyCharacter = event.charactersIgnoringModifiers?.lowercased() {
+            if let keyCharacter = event.charactersIgnoringModifiers?.lowercased() {
                 for tool in MarkupTool.allCases {
                     if keyCharacter == tool.keyboardShortcut {
                         currentTool = tool                        // Clear selections when switching to move tool for clean slate
@@ -409,8 +409,8 @@ extension MarkupEditorController: MarkupCanvasDelegate {
     private func handleMoveFinish(from startPoint: CGPoint, to endPoint: CGPoint) {
         guard let selected = selectedElement,
               let moveStart = moveStartPoint,
-              let _ = elementStartPosition else { 
-            return 
+              let _ = elementStartPosition else {
+            return
         }
         
         // Calculate the delta movement
@@ -1366,7 +1366,9 @@ final class TitleBarToolbarView: NSView {
     }
     
     private func updateToolbarBackground() {
-        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        // For title bar accessories, use transparent background to let the title bar handle the appearance
+        // This ensures proper dark mode support as the title bar itself adapts to the system theme
+        layer?.backgroundColor = NSColor.clear.cgColor
     }
     
     private func updateAppearance() {
