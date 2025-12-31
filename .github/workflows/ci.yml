@@ -29,8 +29,13 @@ jobs:
             -derivedDataPath build \
             clean build CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
 
+      - name: Archive App
+        run: |
+          cd build/Build/Products/Release
+          zip -r VibeShot.zip VibeShot.app
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: VibeShot-App
-          path: build/Build/Products/Release/VibeShot.app
+          path: build/Build/Products/Release/VibeShot.zip
