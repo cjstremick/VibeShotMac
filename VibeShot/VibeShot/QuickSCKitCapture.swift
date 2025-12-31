@@ -24,20 +24,36 @@ final class QuickSCKitCapture: RegionCapturing {
         config.width = Int(pixelSize.width)
         config.height = Int(pixelSize.height)
         config.sourceRect = sourceRect
+        config.showsCursor = false
         
         let filter = try await contentFilter(for: display)
-        let stream = SCStream(filter: filter, configuration: config, delegate: nil)
-        let collector = FirstFrameCollector()
-        try stream.addStreamOutput(collector, type: .screen, sampleHandlerQueue: .main)
-        try await stream.startCapture()
-        defer { Task { try? await stream.stopCapture(); try? stream.removeStreamOutput(collector, type: .screen) } }
         
-        let deadline = Date().addingTimeInterval(0.9)
-        while Date() < deadline {
-            if let image = collector.image { return Result(image: NSImage(cgImage: image, size: bounded.size)) }
-            try await Task.sleep(nanoseconds: 30_000_000)
+        return try await withCheckedThrowingContinuation { continuation in
+            let collector = FirstFrameCollector(continuation: continuation, size: bounded.size)
+            let stream = SCStream(filter: filter, configuration: config, delegate: nil)
+            
+            do {
+                try stream.addStreamOutput(collector, type: .screen, sampleHandlerQueue: .main)
+                collector.stream = stream
+                
+                stream.startCapture { error in
+                    if let error = error {
+                        // Only resume if not already resumed (e.g. by timeout)
+                        if collector.continuation != nil {
+                            continuation.resume(throwing: error)
+                            collector.continuation = nil
+                            collector.stream = nil
+                        }
+                    }
+                }
+                
+                // Start timeout timer
+                collector.startTimeout()
+                
+            } catch {
+                continuation.resume(throwing: error)
+            }
         }
-        throw CaptureError.frameTimeout
     }
     
     // MARK: - Helpers
@@ -68,14 +84,46 @@ final class QuickSCKitCapture: RegionCapturing {
 @available(macOS 13.0, *)
 private final class FirstFrameCollector: NSObject, SCStreamOutput {
     private let ciContext = CIContext(options: nil)
-    var image: CGImage?
+    var continuation: CheckedContinuation<QuickSCKitCapture.Result, Error>?
+    private let size: CGSize
+    var stream: SCStream?
+    
+    init(continuation: CheckedContinuation<QuickSCKitCapture.Result, Error>, size: CGSize) {
+        self.continuation = continuation
+        self.size = size
+    }
+    
+    func startTimeout() {
+        Task {
+            try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second timeout
+            if let continuation = self.continuation {
+                self.continuation = nil
+                continuation.resume(throwing: QuickSCKitCapture.CaptureError.frameTimeout)
+                try? await self.stream?.stopCapture()
+                self.stream = nil
+            }
+        }
+    }
     
     func stream(_ stream: SCStream,
                 didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
                 of outputType: SCStreamOutputType) {
-        guard image == nil, outputType == .screen,
+        guard let continuation = continuation, outputType == .screen,
               let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        
+        self.continuation = nil
+        
         let ci = CIImage(cvImageBuffer: buffer)
-        image = ciContext.createCGImage(ci, from: ci.extent)
+        if let cgImage = ciContext.createCGImage(ci, from: ci.extent) {
+            let nsImage = NSImage(cgImage: cgImage, size: size)
+            continuation.resume(returning: QuickSCKitCapture.Result(image: nsImage))
+        } else {
+            continuation.resume(throwing: QuickSCKitCapture.CaptureError.frameTimeout)
+        }
+        
+        Task {
+            try? await stream.stopCapture()
+            self.stream = nil
+        }
     }
 }

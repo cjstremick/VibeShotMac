@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    name: Build
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Xcode version
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Build
+        run: |
+          xcodebuild -project VibeShot/VibeShot.xcodeproj \
+            -scheme VibeShot \
+            -destination 'platform=macOS' \
+            -configuration Release \
+            -derivedDataPath build \
+            clean build CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VibeShot-App
+          path: build/Build/Products/Release/VibeShot.app

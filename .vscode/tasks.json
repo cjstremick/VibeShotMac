@@ -1,0 +1,15 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build and Run VibeShot",
+			"type": "shell",
+			"command": "xcodebuild -project VibeShot/VibeShot.xcodeproj -scheme VibeShot -destination 'platform=macOS' build && open '/Users/cjstremick/Library/Developer/Xcode/DerivedData/VibeShot-coxqfbwgrdcafodszxgnpdodnbfj/Build/Products/Debug/VibeShot.app'",
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"problemMatcher": []
+		}
+	]
+}

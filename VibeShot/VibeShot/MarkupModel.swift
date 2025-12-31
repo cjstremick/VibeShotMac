@@ -69,6 +69,8 @@ enum MarkupTool: Int, CaseIterable {
     case rectangle = 3
     case stepCounter = 4
     case text = 5
+    case blur = 6
+    case crop = 7
     
     var displayName: String {
         switch self {
@@ -78,6 +80,8 @@ enum MarkupTool: Int, CaseIterable {
         case .rectangle: return "Rectangle"
         case .stepCounter: return "Step Counter"
         case .text: return "Text"
+        case .blur: return "Blur"
+        case .crop: return "Crop"
         }
     }
     
@@ -89,6 +93,8 @@ enum MarkupTool: Int, CaseIterable {
         case .rectangle: return "rectangle"
         case .stepCounter: return "number.circle"
         case .text: return "textformat"
+        case .blur: return "drop.fill"
+        case .crop: return "crop"
         }
     }
     
@@ -100,6 +106,8 @@ enum MarkupTool: Int, CaseIterable {
         case .rectangle: return "r"
         case .stepCounter: return "c"
         case .text: return "t"
+        case .blur: return "b"
+        case .crop: return "k"
         }
     }
     
@@ -116,6 +124,8 @@ protocol MarkupElement: AnyObject, Identifiable {
     
     func draw(in context: CGContext)
     func contains(point: CGPoint) -> Bool
+    func duplicate() -> any MarkupElement
+    func move(by translation: CGPoint)
 }
 
 // MARK: - Arrow Element
@@ -141,6 +151,18 @@ final class ArrowElement: MarkupElement {
         self.endPoint = endPoint
         self.color = color
         self.lineWidth = MarkupLineThicknessManager.shared.currentThickness
+    }
+    
+    // Private init for duplication to preserve exact properties
+    private init(startPoint: CGPoint, endPoint: CGPoint, color: NSColor, lineWidth: CGFloat) {
+        self.startPoint = startPoint
+        self.endPoint = endPoint
+        self.color = color
+        self.lineWidth = lineWidth
+    }
+    
+    func duplicate() -> any MarkupElement {
+        return ArrowElement(startPoint: startPoint, endPoint: endPoint, color: color, lineWidth: lineWidth)
     }
     
     func draw(in context: CGContext) {
@@ -275,6 +297,18 @@ final class RectangleElement: MarkupElement {
         self.lineWidth = MarkupLineThicknessManager.shared.currentThickness
     }
     
+    // Private init for duplication
+    private init(startPoint: CGPoint, endPoint: CGPoint, color: NSColor, lineWidth: CGFloat) {
+        self.startPoint = startPoint
+        self.endPoint = endPoint
+        self.color = color
+        self.lineWidth = lineWidth
+    }
+    
+    func duplicate() -> any MarkupElement {
+        return RectangleElement(startPoint: startPoint, endPoint: endPoint, color: color, lineWidth: lineWidth)
+    }
+    
     func draw(in context: CGContext) {
         context.saveGState()
         
@@ -351,6 +385,10 @@ final class StepCounterElement: MarkupElement {
         self.centerPoint = centerPoint
         self.stepNumber = stepNumber
         self.backgroundColor = color
+    }
+    
+    func duplicate() -> any MarkupElement {
+        return StepCounterElement(centerPoint: centerPoint, stepNumber: stepNumber, color: backgroundColor)
     }
     
     func draw(in context: CGContext) {
@@ -457,6 +495,10 @@ final class TextElement: MarkupElement {
         self.textColor = color
         self._bounds = CGRect.zero
         updateBounds()
+    }
+    
+    func duplicate() -> any MarkupElement {
+        return TextElement(position: position, text: text, color: textColor)
     }
     
     private func updateBounds() {
@@ -569,5 +611,129 @@ extension NSColor {
         // Consider colors with luminance > 0.6 as light
         // This threshold ensures good contrast for both white and black text
         return luminance > 0.6
+    }
+}
+
+// MARK: - Blur Element
+final class BlurElement: MarkupElement {
+    let id = UUID()
+    var isSelected: Bool = false
+    
+    private var rect: CGRect
+    private var baseImage: NSImage
+    private var cachedBlurredImage: NSImage?
+    
+    var bounds: CGRect { rect }
+    
+    init(rect: CGRect, baseImage: NSImage) {
+        self.rect = rect
+        self.baseImage = baseImage
+        updateBlurredImage()
+    }
+    
+    func duplicate() -> any MarkupElement {
+        return BlurElement(rect: rect, baseImage: baseImage)
+    }
+    
+    func move(by translation: CGPoint) {
+        rect.origin.x += translation.x
+        rect.origin.y += translation.y
+        updateBlurredImage()
+    }
+    
+    func updateBaseImage(_ newBaseImage: NSImage) {
+        self.baseImage = newBaseImage
+        updateBlurredImage()
+    }
+    
+    private func updateBlurredImage() {
+        self.cachedBlurredImage = BlurElement.createBlurredImage(from: baseImage, rect: rect)
+    }
+    
+    static func createBlurredImage(from image: NSImage, rect: CGRect) -> NSImage? {
+        // Create a new image with the size of the rect
+        let newImage = NSImage(size: rect.size)
+        newImage.lockFocus()
+        
+        // Draw the relevant part of the original image
+        image.draw(in: NSRect(origin: .zero, size: rect.size), from: rect, operation: .copy, fraction: 1.0)
+        
+        newImage.unlockFocus()
+        
+        // Apply Gaussian Blur using CoreImage
+        guard let tiffData = newImage.tiffRepresentation,
+              let bitmapRep = NSBitmapImageRep(data: tiffData),
+              let ciImage = CIImage(bitmapImageRep: bitmapRep) else { return nil }
+              
+        let filter = CIFilter(name: "CIGaussianBlur")
+        filter?.setValue(ciImage, forKey: kCIInputImageKey)
+        filter?.setValue(10.0, forKey: kCIInputRadiusKey)
+        
+        guard let outputImage = filter?.outputImage else { return nil }
+        
+        // Crop back to original size
+        let croppedOutput = outputImage.cropped(to: ciImage.extent)
+        
+        let rep = NSCIImageRep(ciImage: croppedOutput)
+        let finalImage = NSImage(size: rect.size)
+        finalImage.addRepresentation(rep)
+        
+        return finalImage
+    }
+    
+    func draw(in context: CGContext) {
+        context.saveGState()
+        
+        if let blurredImage = cachedBlurredImage {
+            // Use NSGraphicsContext to draw NSImage easily
+            NSGraphicsContext.saveGraphicsState()
+            let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
+            NSGraphicsContext.current = nsContext
+            
+            blurredImage.draw(in: rect)
+            
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        
+        // Draw selection indicator if selected
+        if isSelected {
+            drawSelectionIndicator(in: context)
+        }
+        
+        context.restoreGState()
+    }
+    
+    func contains(point: CGPoint) -> Bool {
+        return rect.contains(point)
+    }
+    
+    private func drawSelectionIndicator(in context: CGContext) {
+        context.setStrokeColor(NSColor.selectedControlColor.cgColor)
+        context.setLineWidth(2.0)
+        context.setLineDash(phase: 0, lengths: [4, 4])
+        context.stroke(rect)
+        
+        // Draw corner handles
+        let handleSize: CGFloat = 8.0
+        let corners = [
+            CGPoint(x: rect.minX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.maxY),
+            CGPoint(x: rect.minX, y: rect.maxY)
+        ]
+        
+        context.setFillColor(NSColor.white.cgColor)
+        context.setLineDash(phase: 0, lengths: [])
+        
+        for corner in corners {
+            let handleRect = CGRect(
+                x: corner.x - handleSize/2,
+                y: corner.y - handleSize/2,
+                width: handleSize,
+                height: handleSize
+            )
+            context.fill(handleRect)
+            context.stroke(handleRect)
+        }
     }
 }

@@ -7,14 +7,16 @@ protocol CaptureOverlayDelegate: AnyObject {
 final class CaptureOverlayController: NSObject {
     private var window: OverlayWindow?
     let display: NSScreen
+    let image: NSImage?
     weak var delegate: CaptureOverlayDelegate?
 
-    init(display: NSScreen) {
+    init(display: NSScreen, image: NSImage? = nil) {
         self.display = display
+        self.image = image
     }
 
     func begin() {
-        let w = OverlayWindow(screen: display)
+        let w = OverlayWindow(screen: display, image: image)
         w.overlayDelegate = self
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -43,8 +45,8 @@ private final class OverlayWindow: NSWindow, OverlayInteractionDelegate {
     weak var overlayDelegate: OverlayInteractionDelegate?
     private let overlayView: OverlayRootView
 
-    init(screen: NSScreen) {
-        overlayView = OverlayRootView(frame: NSRect(origin: .zero, size: screen.frame.size))
+    init(screen: NSScreen, image: NSImage? = nil) {
+        overlayView = OverlayRootView(frame: NSRect(origin: .zero, size: screen.frame.size), image: image)
         super.init(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false)
         isReleasedWhenClosed = false
         level = .screenSaver
@@ -69,13 +71,15 @@ private protocol OverlayInteractionDelegate: AnyObject {
 
 private final class OverlayRootView: NSView {
     weak var interactionDelegate: OverlayInteractionDelegate?
+    private let image: NSImage?
 
     private var dragStart: CGPoint?
     private var currentRect: CGRect? { didSet { needsDisplay = true } }
 
     private let label = NSTextField(labelWithString: "")
 
-    override init(frame frameRect: NSRect) {
+    init(frame frameRect: NSRect, image: NSImage? = nil) {
+        self.image = image
         super.init(frame: frameRect)
         addSubview(label)
         label.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
@@ -91,6 +95,9 @@ private final class OverlayRootView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override func draw(_ dirtyRect: NSRect) {
+        if let image = image {
+            image.draw(in: bounds)
+        }
         NSColor.black.withAlphaComponent(0.45).setFill()
         dirtyRect.fill()
         guard let rect = currentRect else { return }

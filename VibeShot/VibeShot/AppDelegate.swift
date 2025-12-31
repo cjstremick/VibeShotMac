@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
     private let captureService = QuickSCKitCapture()
     private var overlayController: CaptureOverlayController?
     private var overlayDisplay: NSScreen?
+    private var fullScreenCapture: NSImage?
     private var hotKeyRef: EventHotKeyRef?
     private var eventHandlerRef: EventHandlerRef?
     private var markupEditor: MarkupEditorController? // Add strong reference
@@ -52,37 +53,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
             return
         }
         overlayDisplay = display
-        let controller = CaptureOverlayController(display: display)
-        controller.delegate = self
-        overlayController = controller
-        controller.begin()
-    }
-    
-    func overlayDidFinish(rect: CGRect?) {
-        guard let rect = rect, let display = overlayDisplay else {
-            overlayController = nil; overlayDisplay = nil; return
-        }
-        overlayController = nil
-        overlayDisplay = nil
+        
         Task { @MainActor in
             do {
-                let start = CFAbsoluteTimeGetCurrent()
-                let result = try await captureService.capture(rect: rect, on: display)
-                let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.writeObjects([result.image])
+                // Capture full screen first (Freeze Frame)
+                let result = try await captureService.capture(rect: display.frame, on: display)
+                self.fullScreenCapture = result.image
                 
-                // Open markup editor and keep strong reference to prevent deallocation
-                let editor = MarkupEditorController(baseImage: result.image)
-                self.markupEditor = editor // Keep strong reference
-                editor.show()
-                
-                NSLog("[RegionCapture] SUCCESS rect=\(NSStringFromRect(rect)) elapsedMs=\(Int(elapsed))")
+                // Show overlay with the captured image
+                let controller = CaptureOverlayController(display: display, image: result.image)
+                controller.delegate = self
+                self.overlayController = controller
+                controller.begin()
             } catch {
                 showTransientAlert(title: "Capture Failed", text: error.localizedDescription)
                 NSLog("[RegionCapture] FAILURE: \(error)")
+                overlayDisplay = nil
             }
         }
+    }
+    
+    func overlayDidFinish(rect: CGRect?) {
+        guard let rect = rect, let display = overlayDisplay, let fullImage = fullScreenCapture else {
+            overlayController = nil
+            overlayDisplay = nil
+            fullScreenCapture = nil
+            return
+        }
+        
+        overlayController = nil
+        overlayDisplay = nil
+        
+        // Calculate rect relative to display origin
+        let localRect = CGRect(
+            x: rect.origin.x - display.frame.origin.x,
+            y: rect.origin.y - display.frame.origin.y,
+            width: rect.width,
+            height: rect.height
+        )
+        
+        if let croppedImage = crop(image: fullImage, to: localRect) {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.writeObjects([croppedImage])
+            
+            // Open markup editor and keep strong reference to prevent deallocation
+            let editor = MarkupEditorController(baseImage: croppedImage)
+            self.markupEditor = editor // Keep strong reference
+            editor.show()
+        }
+        
+        fullScreenCapture = nil
+    }
+    
+    private func crop(image: NSImage, to rect: CGRect) -> NSImage? {
+        let newImage = NSImage(size: rect.size)
+        newImage.lockFocus()
+        image.draw(in: NSRect(origin: .zero, size: rect.size), from: rect, operation: .copy, fraction: 1.0)
+        newImage.unlockFocus()
+        return newImage
     }
     
     @objc private func showAbout() {
