@@ -35,10 +35,38 @@ jobs:
           cd build/Build/Products/Release
           zip -r VibeShot.zip VibeShot.app
 
+      - name: Generate Homebrew Cask
+        run: |
+          cd build/Build/Products/Release
+          
+          # Calculate SHA256
+          SHA256=$(shasum -a 256 VibeShot.zip | awk '{print $1}')
+          
+          # Get version from tag (strip 'v' prefix)
+          VERSION_TAG=${{ github.ref_name }}
+          VERSION_NUM=${VERSION_TAG#v}
+          
+          # Create Cask file
+          cat <<EOF > vibeshot.rb
+          cask "vibeshot" do
+            version "$VERSION_NUM"
+            sha256 "$SHA256"
+
+            url "https://github.com/${{ github.repository }}/releases/download/$VERSION_TAG/VibeShot.zip"
+            name "VibeShot"
+            desc "Screenshot and markup tool"
+            homepage "https://github.com/${{ github.repository }}"
+
+            app "VibeShot.app"
+          end
+          EOF
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: build/Build/Products/Release/VibeShot.zip
+          files: |
+            build/Build/Products/Release/VibeShot.zip
+            build/Build/Products/Release/vibeshot.rb
           draft: false
           prerelease: false
           generate_release_notes: true

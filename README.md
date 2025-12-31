@@ -38,6 +38,17 @@ From there, the AI helped:
 
 ### Installation
 
+#### Via Homebrew
+
+You can install VibeShot easily using Homebrew:
+
+```bash
+brew tap cjstremick/tap
+brew install --cask vibeshot
+```
+
+#### From Source
+
 1. **Clone the repository:**
    ```bash
    git clone https://github.com/cjstremick/VibeShotMac.git
