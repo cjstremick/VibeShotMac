@@ -28,7 +28,7 @@ jobs:
             -destination 'platform=macOS' \
             -configuration Release \
             -derivedDataPath build \
-            clean build CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
+            clean build CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO
 
       - name: Archive
         run: |
