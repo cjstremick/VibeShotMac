@@ -28,7 +28,6 @@ final class MarkupEditorController: NSWindowController {
     private static let minimumWindowWidth: CGFloat = 700
     
     init(baseImage: NSImage) {
-        print("DEBUG: MarkupEditorController init called")
         self.baseImage = baseImage
         
         // Create views first
@@ -76,7 +75,6 @@ final class MarkupEditorController: NSWindowController {
     }
     
     private func setupWindow() {
-        print("DEBUG: setupWindow called")
         guard let window = window else { return }
         
         window.title = "VibeShot Editor"
@@ -96,6 +94,12 @@ final class MarkupEditorController: NSWindowController {
         let snapshotElements = markupElements.map { $0.duplicate() }
         let snapshot = EditorState(image: baseImage, elements: snapshotElements)
         undoStack.append(snapshot)
+        
+        // Limit undo stack size to prevent excessive memory usage
+        if undoStack.count > MarkupConstants.UndoRedo.maxStackSize {
+            undoStack.removeFirst()
+        }
+        
         redoStack.removeAll() // Clear redo stack on new action
     }
     
@@ -207,19 +211,12 @@ final class MarkupEditorController: NSWindowController {
     }
     
     private func configureTitleBarToolbar() {
-        guard let window = window else {
-            print("DEBUG: Window is nil in configureTitleBarToolbar")
-            return
-        }
-        
-        print("DEBUG: Creating title bar toolbar")
-        print("DEBUG: Toolbar frame: \(titleBarToolbar.frame)")
-        print("DEBUG: Toolbar intrinsic size: \(titleBarToolbar.intrinsicContentSize)")
+        guard let window = window else { return }
         
         // Enable layer for proper rendering
         titleBarToolbar.wantsLayer = true
         
-        // CRITICAL: Ensure the toolbar has the correct frame based on intrinsic content size
+        // Ensure the toolbar has the correct frame based on intrinsic content size
         let intrinsicSize = titleBarToolbar.intrinsicContentSize
         titleBarToolbar.frame = NSRect(origin: .zero, size: intrinsicSize)
         
@@ -231,16 +228,10 @@ final class MarkupEditorController: NSWindowController {
         // Add the accessory view controller to the window
         window.addTitlebarAccessoryViewController(accessoryViewController)
         
-        print("DEBUG: Title bar accessory view controller added")
-        print("DEBUG: Window titlebar accessories count: \(window.titlebarAccessoryViewControllers.count)")
-        print("DEBUG: Final toolbar frame: \(titleBarToolbar.frame)")
-        
         // Initialize title bar toolbar state
         titleBarToolbar.updateColor(MarkupColorManager.shared.currentColor)
         titleBarToolbar.updateThickness(MarkupLineThicknessManager.shared.currentThickness)
         titleBarToolbar.selectTool(currentTool)
-        
-        print("DEBUG: Title bar toolbar configuration complete")
     }
     
     func show() {
@@ -281,19 +272,6 @@ extension MarkupEditorController: MarkupToolbarDelegate {
         
         // Update title bar toolbar
         titleBarToolbar.updateColor(color)
-        
-        // No need to refresh canvas - existing elements keep their colors
-        // Only new elements will use the new color
-    }
-    
-    func thicknessButtonClicked(_ sender: NSButton) {
-        // This will be implemented to show thickness selection
-        // For now, we'll handle it like the old toolbar
-    }
-    
-    func colorButtonClicked(_ sender: NSButton) {
-        // This will be implemented to show color selection
-        // For now, we'll handle it like the old toolbar
     }
 }
 
@@ -302,9 +280,7 @@ extension MarkupEditorController: MarkupCanvasDelegate {
     func canvasDidStartDrawing(at point: CGPoint) {
         switch currentTool {
         case .selection:
-            handleSelectionAt(point)
-        case .move:
-            handleMoveStart(at: point)
+            handleSelectionStart(at: point)
         case .arrow, .rectangle, .blur:
             // Will handle in canvasDidFinishDrawing
             break
@@ -324,12 +300,14 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         applyCrop(rect: rect)
     }
     
+    func canvasWillResize() {
+        pushUndoState()  // Save state before resize operation
+    }
+    
     func canvasDidFinishDrawing(from startPoint: CGPoint, to endPoint: CGPoint) {
         switch currentTool {
         case .selection:
-            break // Already handled in start
-        case .move:
-            handleMoveFinish(from: startPoint, to: endPoint)
+            handleSelectionFinish(from: startPoint, to: endPoint)
         case .arrow:
             // Calculate the distance of the arrow
             let distance = sqrt(pow(endPoint.x - startPoint.x, 2) + pow(endPoint.y - startPoint.y, 2))
@@ -440,15 +418,7 @@ extension MarkupEditorController: MarkupCanvasDelegate {
             if let keyCharacter = event.charactersIgnoringModifiers?.lowercased() {
                 for tool in MarkupTool.allCases {
                     if keyCharacter == tool.keyboardShortcut {
-                        currentTool = tool                        // Clear selections when switching to move tool for clean slate
-                        if tool == .move {
-                            for element in markupElements {
-                                element.isSelected = false
-                            }
-                            selectedElement = nil
-                            canvasView.needsDisplay = true
-                        }
-                        
+                        currentTool = tool
                         titleBarToolbar.selectTool(tool)
                         canvasView.setCurrentTool(tool)
                         return
@@ -467,18 +437,38 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         canvasView.needsDisplay = true
     }
     
-    private func handleSelectionAt(_ point: CGPoint) {
-        // First deselect all elements
+    func canvasDidRequestToolChange(_ tool: MarkupTool) {
+        // Switch to the requested tool (e.g., from click-to-select)
+        currentTool = tool
+        titleBarToolbar.selectTool(tool)
+        canvasView.setCurrentTool(tool)
+    }
+    
+    private func handleSelectionStart(at point: CGPoint) {
+        moveStartPoint = point
+        
+        // Check if clicking on ANY already-selected element (to move all selected)
+        for element in markupElements {
+            if element.isSelected && element.contains(point: point) {
+                // Clicking on a selected element - prepare to move all selected elements
+                elementStartPosition = element.bounds.origin
+                canvasView.needsDisplay = true
+                return
+            }
+        }
+        
+        // Otherwise, deselect all and try to select a new element
         for element in markupElements {
             element.isSelected = false
         }
         selectedElement = nil
         
         // Find topmost element at point (reverse order for topmost)
-        for (_, element) in markupElements.reversed().enumerated() {
+        for element in markupElements.reversed() {
             if element.contains(point: point) {
                 selectedElement = element
                 element.isSelected = true
+                elementStartPosition = element.bounds.origin
                 break
             }
         }
@@ -486,43 +476,20 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         canvasView.needsDisplay = true
     }
     
-    private func handleMoveStart(at point: CGPoint) {
-        moveStartPoint = point
-        
-        // First, deselect all elements
-        for element in markupElements {
-            element.isSelected = false
-        }
-        selectedElement = nil
-        
-        // Find element at point to select and move
-        for (_, element) in markupElements.reversed().enumerated() {
-            if element.contains(point: point) {
-                selectedElement = element
-                element.isSelected = true
-                elementStartPosition = element.bounds.origin
-                
-                // Save state before move starts (or rather, we should save it before the move is committed)
-                // But since move is interactive, we might want to save it here, but only if we actually move.
-                // A better place is handleMoveFinish, but we need the state BEFORE the move.
-                // So we'll save the state here, but we need to be careful not to save if no move happens.
-                // Actually, let's save the state in handleMoveFinish by restoring the element to its original position,
-                // snapshotting, and then re-applying the move. Or just snapshot here and if no move happens, pop it?
-                // Simplest: Snapshot here. If the user just clicks without dragging, we get a redundant state but that's okay.
-                pushUndoState()
-                
-                canvasView.needsDisplay = true
-                return
-            }
-        }
-        
-        canvasView.needsDisplay = true
-    }
-    
-    private func handleMoveFinish(from startPoint: CGPoint, to endPoint: CGPoint) {
-        guard let selected = selectedElement,
-              let moveStart = moveStartPoint,
+    private func handleSelectionFinish(from startPoint: CGPoint, to endPoint: CGPoint) {
+        guard let moveStart = moveStartPoint,
               let _ = elementStartPosition else {
+            // No move was prepared, clear move state
+            moveStartPoint = nil
+            elementStartPosition = nil
+            return
+        }
+        
+        // Check if any elements are selected
+        let selectedElements = markupElements.filter { $0.isSelected }
+        guard !selectedElements.isEmpty else {
+            moveStartPoint = nil
+            elementStartPosition = nil
             return
         }
         
@@ -530,8 +497,17 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         let deltaX = endPoint.x - moveStart.x
         let deltaY = endPoint.y - moveStart.y
         
-        // Apply movement based on element type
-        moveElement(selected, deltaX: deltaX, deltaY: deltaY)
+        // Only apply movement if there was actual movement
+        if abs(deltaX) > 1 || abs(deltaY) > 1 {
+            // Push undo state before applying the move
+            pushUndoState()
+            
+            // Move all selected elements
+            let translation = CGPoint(x: deltaX, y: deltaY)
+            for element in selectedElements {
+                moveElement(element, by: translation)
+            }
+        }
         
         // Clear move state
         moveStartPoint = nil
@@ -540,25 +516,15 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         canvasView.needsDisplay = true
     }
     
-    private func moveElement(_ element: any MarkupElement, deltaX: CGFloat, deltaY: CGFloat) {
-        // Move different element types
-        if let arrow = element as? ArrowElement {
-            arrow.move(by: CGPoint(x: deltaX, y: deltaY))
-        } else if let rectangle = element as? RectangleElement {
-            rectangle.move(by: CGPoint(x: deltaX, y: deltaY))
-        } else if let stepCounter = element as? StepCounterElement {
-            stepCounter.move(by: CGPoint(x: deltaX, y: deltaY))
-        } else if let text = element as? TextElement {
-            text.move(by: CGPoint(x: deltaX, y: deltaY))
-        } else if let blur = element as? BlurElement {
-            blur.move(by: CGPoint(x: deltaX, y: deltaY))
-        }
+    private func moveElement(_ element: any MarkupElement, by translation: CGPoint) {
+        // MarkupElement protocol already has move(by:) method
+        element.move(by: translation)
     }
     
     private func handleStepCounterStamp(at point: CGPoint) {
         // Clamp the center point to ensure the stamp doesn't extend beyond image bounds
         // Step counter has a radius of 20 pixels
-        let radius: CGFloat = 20.0
+        let radius: CGFloat = MarkupConstants.StepCounter.radius
         let imageRect = NSRect(origin: .zero, size: baseImage.size)
         let clampedPoint = CGPoint(
             x: max(radius, min(point.x, imageRect.maxX - radius)),
@@ -660,11 +626,12 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         ])
         
         // Add to window content view
-        window.contentView?.addSubview(feedbackView)
+        guard let contentView = window.contentView else { return }
+        contentView.addSubview(feedbackView)
         feedbackView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            feedbackView.centerXAnchor.constraint(equalTo: window.contentView!.centerXAnchor),
-            feedbackView.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 50)
+            feedbackView.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            feedbackView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 50)
         ])
         
         // Initial state - hidden
@@ -757,8 +724,9 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         context.translateBy(x: 0, y: size.height)
         context.scaleBy(x: 1, y: -1)
         
-        // Draw markup elements with the transformed coordinate system
-        for element in markupElements {
+        // Draw markup elements sorted by z-order (lower values draw first/behind)
+        let sortedElements = markupElements.sorted { $0.zOrder < $1.zOrder }
+        for element in sortedElements {
             element.draw(in: context)
         }
         

@@ -62,15 +62,25 @@ final class QuickSCKitCapture: RegionCapturing {
     @MainActor private func preflight() throws {
         guard #available(macOS 13.0, *) else { throw CaptureError.unsupported }
         if !CGPreflightScreenCaptureAccess() {
+            // Check if we've already shown the system dialog before
             let hasRequestedBefore = UserDefaults.standard.bool(forKey: Self.permissionRequestedKey)
             
+            // Always call this - it shows dialog first time, does nothing after
+            let granted = CGRequestScreenCaptureAccess()
+            
+            // Mark that we've now requested (after the call)
+            UserDefaults.standard.set(true, forKey: Self.permissionRequestedKey)
+            
+            if granted {
+                // Permission was granted, continue
+                return
+            }
+            
             if hasRequestedBefore {
-                // User has already denied permission - show error
+                // We requested before, user denied - show our error message
                 throw CaptureError.permissionDenied
             } else {
-                // First time - request access and mark that we've requested
-                _ = CGRequestScreenCaptureAccess()
-                UserDefaults.standard.set(true, forKey: Self.permissionRequestedKey)
+                // First time - system dialog was just shown, silently abort
                 throw CaptureError.permissionPending
             }
         }

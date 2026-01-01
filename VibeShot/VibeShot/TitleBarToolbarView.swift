@@ -4,8 +4,6 @@ import Cocoa
 protocol MarkupToolbarDelegate: AnyObject {
     func toolbarDidSelectTool(_ tool: MarkupTool)
     func toolbarDidSelectColor(_ color: NSColor)
-    func thicknessButtonClicked(_ sender: NSButton)
-    func colorButtonClicked(_ sender: NSButton)
 }
 
 // MARK: - Thickness Preview View

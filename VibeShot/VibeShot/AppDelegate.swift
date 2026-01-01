@@ -66,11 +66,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
                 self.overlayController = controller
                 controller.begin()
             } catch QuickSCKitCapture.CaptureError.permissionPending {
-                // User needs to grant screen recording permission - just silently abort
-                // The system permission dialog is already shown
+                // System dialog was just shown - silently abort, user will retry after granting
                 overlayDisplay = nil
             } catch QuickSCKitCapture.CaptureError.permissionDenied {
-                // User previously denied permission
+                // User needs to grant permission or previously denied
                 showTransientAlert(
                     title: "Screen Recording Permission Required",
                     text: "VibeShot needs screen recording permission to capture screenshots.\n\nPlease go to System Settings → Privacy & Security → Screen Recording and enable VibeShot, then try again."

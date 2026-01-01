@@ -35,6 +35,8 @@ protocol MarkupCanvasDelegate: AnyObject {
     func canvasDidReceiveKeyDown(with event: NSEvent)
     func canvasDidUpdateElements(_ elements: [any MarkupElement])
     func canvasDidSelectElement(_ element: any MarkupElement)
+    func canvasWillResize()  // Called before a resize operation starts
+    func canvasDidRequestToolChange(_ tool: MarkupTool)  // Request tool switch (e.g., click-to-select)
     var selectedElement: (any MarkupElement)? { get }
 }
 
@@ -65,6 +67,13 @@ final class MarkupCanvasView: NSView {
     
     // Selection-specific properties
     private var selectionRect: CGRect?
+    private var isMovingSelection = false  // True when dragging selected elements, false when drawing selection rect
+    
+    // Resize-specific properties
+    private var isResizing = false
+    private var activeResizeHandle: ResizeHandle?
+    private var resizingElement: (any ResizableElement)?
+    private var isResizingArrowStart = false  // For arrow elements: true = start point, false = end point
     
     // Crop-specific properties
     var cropSelectionRect: CGRect?
@@ -145,25 +154,28 @@ final class MarkupCanvasView: NSView {
         let imageRect = NSRect(origin: .zero, size: image.size)
         image.draw(in: imageRect)
         
-        // Draw all markup elements
-        for element in markupElements {
-            // Skip drawing the element being moved to avoid showing it in original position
-            if isDrawing && currentTool == .move && delegate?.selectedElement === element {
+        // Draw all markup elements sorted by z-order (lower values draw first/behind)
+        let sortedElements = markupElements.sorted { $0.zOrder < $1.zOrder }
+        for element in sortedElements {
+            // Skip drawing selected elements being moved to avoid showing them in original position
+            if isDrawing && currentTool == .selection && isMovingSelection && element.isSelected {
                 continue
             }
             element.draw(in: context)
         }
         
         // Draw preview based on current tool
-        if isDrawing, let startPoint = dragStartPoint, let endPoint = currentDragPoint {
+        if isDrawing, !isResizing, let startPoint = dragStartPoint, let endPoint = currentDragPoint {
             switch currentTool {
             case .arrow:
                 drawPreviewArrow(from: startPoint, to: endPoint, in: context)
             case .selection:
-                drawSelectionRect(from: startPoint, to: endPoint, in: context)
-            case .move:
-                // For move tool, show element being dragged at new position
-                drawMovePreview(from: startPoint, to: endPoint, in: context)
+                // For selection tool, show elements being dragged if moving, or selection rect if selecting
+                if isMovingSelection {
+                    drawMovePreview(from: startPoint, to: endPoint, in: context)
+                } else {
+                    drawSelectionRect(from: startPoint, to: endPoint, in: context)
+                }
             case .rectangle:
                 drawRectanglePreview(from: startPoint, to: endPoint, in: context)
             case .stepCounter:
@@ -180,10 +192,27 @@ final class MarkupCanvasView: NSView {
             }
         }
         
+        // Draw resize handles if exactly one resizable element is selected
+        if !isDrawing || isResizing {
+            drawResizeHandlesIfNeeded(in: context)
+        }
+        
         // Draw crop overlay if active
         if let cropRect = cropSelectionRect {
             drawCropOverlay(rect: cropRect, in: context)
         }
+    }
+    
+    private func drawResizeHandlesIfNeeded(in context: CGContext) {
+        // Only show resize handles when exactly one element is selected
+        let selectedElements = markupElements.filter { $0.isSelected }
+        guard selectedElements.count == 1,
+              let element = selectedElements.first,
+              let resizable = element as? (any ResizableElement) else {
+            return
+        }
+        
+        resizable.drawResizeHandles(in: context)
     }
     
     private func drawCropOverlay(rect: CGRect, in context: CGContext) {
@@ -341,8 +370,6 @@ final class MarkupCanvasView: NSView {
     }
     
     private func drawBlurPreview(from startPoint: CGPoint, to endPoint: CGPoint, in context: CGContext) {
-        context.saveGState()
-        
         let rect = CGRect(
             x: min(startPoint.x, endPoint.x),
             y: min(startPoint.y, endPoint.y),
@@ -350,21 +377,35 @@ final class MarkupCanvasView: NSView {
             height: abs(endPoint.y - startPoint.y)
         )
         
-        // Draw a semi-transparent overlay to indicate blur area
-        context.setFillColor(NSColor.white.withAlphaComponent(0.3).cgColor)
+        // Only show blur preview if the rect has some size
+        guard rect.width > 5 && rect.height > 5 else { return }
+        
+        context.saveGState()
+        
+        // Create a live blur preview using the base image
+        if let blurredImage = BlurElement.createBlurredImage(from: image, rect: rect) {
+            NSGraphicsContext.saveGraphicsState()
+            let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
+            NSGraphicsContext.current = nsContext
+            
+            blurredImage.draw(in: rect)
+            
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        
+        // Draw border around the blur area
         context.setStrokeColor(NSColor.white.withAlphaComponent(0.8).cgColor)
         context.setLineWidth(1.0)
         context.setLineDash(phase: 0, lengths: [4, 4])
-        
-        context.fill(rect)
         context.stroke(rect)
         
         context.restoreGState()
     }
     
     private func drawMovePreview(from startPoint: CGPoint, to endPoint: CGPoint, in context: CGContext) {
-        // Only show move preview if there's a selected element
-        guard let selectedElement = delegate?.selectedElement else { return }
+        // Get all selected elements sorted by z-order
+        let selectedElements = markupElements.filter { $0.isSelected }.sorted { $0.zOrder < $1.zOrder }
+        guard !selectedElements.isEmpty else { return }
         
         // Calculate the movement delta
         let deltaX = endPoint.x - startPoint.x
@@ -373,14 +414,47 @@ final class MarkupCanvasView: NSView {
         // Save the current state
         context.saveGState()
         
-        // Draw at full opacity since this is the only version of the element shown
+        // Draw at full opacity since this is the only version of the elements shown
         context.setAlpha(1.0)
         
-        // Translate to show the element at its new position
-        context.translateBy(x: deltaX, y: deltaY)
-        
-        // Draw the element at the new position
-        selectedElement.draw(in: context)
+        // Draw all selected elements at the new position
+        for element in selectedElements {
+            if let blurElement = element as? BlurElement {
+                // For blur elements, we need to generate a new blur at the translated position
+                let originalBounds = blurElement.bounds
+                let newRect = CGRect(
+                    x: originalBounds.origin.x + deltaX,
+                    y: originalBounds.origin.y + deltaY,
+                    width: originalBounds.width,
+                    height: originalBounds.height
+                )
+                
+                // Create blur preview at the new position
+                if let blurredImage = BlurElement.createBlurredImage(from: image, rect: newRect) {
+                    NSGraphicsContext.saveGraphicsState()
+                    let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
+                    NSGraphicsContext.current = nsContext
+                    
+                    blurredImage.draw(in: newRect)
+                    
+                    NSGraphicsContext.restoreGraphicsState()
+                    
+                    // Draw selection indicator
+                    if blurElement.isSelected {
+                        context.setStrokeColor(NSColor.selectedControlColor.cgColor)
+                        context.setLineWidth(2.0)
+                        context.setLineDash(phase: 0, lengths: [4, 4])
+                        context.stroke(newRect)
+                    }
+                }
+            } else {
+                // For other elements, just translate and draw
+                context.saveGState()
+                context.translateBy(x: deltaX, y: deltaY)
+                element.draw(in: context)
+                context.restoreGState()
+            }
+        }
         
         context.restoreGState()
     }
@@ -393,6 +467,56 @@ final class MarkupCanvasView: NSView {
         currentDragPoint = point
         isDrawing = true
         selectionRect = nil
+        isResizing = false
+        activeResizeHandle = nil
+        resizingElement = nil
+        
+        // Check if we're clicking on a resize handle (only when exactly one element is selected)
+        if currentTool == .selection {
+            let selectedElements = markupElements.filter { $0.isSelected }
+            if selectedElements.count == 1, let element = selectedElements.first {
+                if let resizable = element as? (any ResizableElement) {
+                    // Special handling for arrows - they have handles at endpoints
+                    if let arrow = element as? ArrowElement {
+                        if let isStart = arrow.hitTestArrowHandle(point: point) {
+                            isResizing = true
+                            resizingElement = arrow
+                            isResizingArrowStart = isStart
+                            isMovingSelection = false
+                            delegate?.canvasWillResize()
+                            delegate?.canvasDidStartDrawing(at: point)
+                            needsDisplay = true
+                            return
+                        }
+                    } else {
+                        // Standard four-corner resize handles
+                        if let handle = ResizeHandle.hitTest(point: point, bounds: resizable.bounds) {
+                            isResizing = true
+                            activeResizeHandle = handle
+                            resizingElement = resizable
+                            isMovingSelection = false
+                            delegate?.canvasWillResize()
+                            delegate?.canvasDidStartDrawing(at: point)
+                            needsDisplay = true
+                            return
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Check if we're clicking on an element (to move it)
+        // Note: We check ANY element, not just selected ones, because the controller
+        // will select the clicked element and we want to enable immediate dragging
+        isMovingSelection = false
+        if currentTool == .selection {
+            for element in markupElements.reversed() {
+                if element.contains(point: point) {
+                    isMovingSelection = true
+                    break
+                }
+            }
+        }
         
         delegate?.canvasDidStartDrawing(at: point)
         
@@ -404,8 +528,23 @@ final class MarkupCanvasView: NSView {
         let rawPoint = convert(event.locationInWindow, from: nil)
         currentDragPoint = clampToImageBounds(rawPoint)
         
-        // Update selection rect for selection tool
-        if currentTool == .selection, let startPoint = dragStartPoint, let endPoint = currentDragPoint {
+        // Handle resizing
+        if isResizing, let point = currentDragPoint {
+            if let arrow = resizingElement as? ArrowElement {
+                if isResizingArrowStart {
+                    arrow.setStartPoint(point)
+                } else {
+                    arrow.setEndPoint(point)
+                }
+            } else if let handle = activeResizeHandle, let resizable = resizingElement {
+                resizable.resize(handle: handle, to: point)
+            }
+            needsDisplay = true
+            return
+        }
+        
+        // Update selection rect for selection tool (only if not moving or resizing selected elements)
+        if currentTool == .selection && !isMovingSelection && !isResizing, let startPoint = dragStartPoint, let endPoint = currentDragPoint {
             selectionRect = CGRect(
                 x: min(startPoint.x, endPoint.x),
                 y: min(startPoint.y, endPoint.y),
@@ -438,10 +577,55 @@ final class MarkupCanvasView: NSView {
         dragStartPoint = nil
         currentDragPoint = nil
         
-        // Handle selection rectangle if we were dragging
-        if currentTool == .selection && selectionRect != nil {
+        // Handle resize completion
+        if isResizing {
+            // Finalize blur if we were resizing a blur element
+            if let blur = resizingElement as? BlurElement {
+                blur.finalizeBlur()
+            }
+            isResizing = false
+            activeResizeHandle = nil
+            resizingElement = nil
+            isResizingArrowStart = false
+            needsDisplay = true
+            return
+        }
+        
+        // Click-to-select: If using a drawing tool (not selection, stepCounter, or crop)
+        // and user clicked (didn't drag) on an existing element, switch to selection
+        let dragDistance = hypot(endPoint.x - startPoint.x, endPoint.y - startPoint.y)
+        let isClick = dragDistance < 5.0
+        if isClick && currentTool != .selection && currentTool != .stepCounter && currentTool != .crop {
+            // Check if click is on an existing element
+            for element in markupElements.reversed() {
+                if element.contains(point: endPoint) {
+                    // Clear previous selections and select this element
+                    for el in markupElements {
+                        el.isSelected = false
+                    }
+                    element.isSelected = true
+                    
+                    // Request tool change to selection
+                    delegate?.canvasDidRequestToolChange(.selection)
+                    delegate?.canvasDidSelectElement(element)
+                    
+                    isDrawing = false
+                    dragStartPoint = nil
+                    currentDragPoint = nil
+                    selectionRect = nil
+                    needsDisplay = true
+                    return
+                }
+            }
+        }
+        
+        // Handle selection rectangle if we were dragging to select (not moving)
+        if currentTool == .selection && selectionRect != nil && !isMovingSelection {
             handleRectangleSelection()
         }
+        
+        // Reset move flag
+        isMovingSelection = false
         
         // Handle crop immediately on mouse up
         if currentTool == .crop, let cropRect = cropSelectionRect {
