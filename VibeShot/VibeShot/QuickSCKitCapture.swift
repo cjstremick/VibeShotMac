@@ -10,7 +10,7 @@ final class QuickSCKitCapture: RegionCapturing {
     
     struct Result { let image: NSImage }
     
-    enum CaptureError: Error { case unsupported, noDisplay, frameTimeout, permissionDenied }
+    enum CaptureError: Error { case unsupported, noDisplay, frameTimeout, permissionDenied, permissionPending }
     
     @MainActor
     func capture(rect: CGRect, on display: NSScreen) async throws -> Result {
@@ -57,9 +57,23 @@ final class QuickSCKitCapture: RegionCapturing {
     }
     
     // MARK: - Helpers
+    private static let permissionRequestedKey = "ScreenCapturePermissionRequested"
+    
     @MainActor private func preflight() throws {
         guard #available(macOS 13.0, *) else { throw CaptureError.unsupported }
-        if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess(); throw CaptureError.permissionDenied }
+        if !CGPreflightScreenCaptureAccess() {
+            let hasRequestedBefore = UserDefaults.standard.bool(forKey: Self.permissionRequestedKey)
+            
+            if hasRequestedBefore {
+                // User has already denied permission - show error
+                throw CaptureError.permissionDenied
+            } else {
+                // First time - request access and mark that we've requested
+                _ = CGRequestScreenCaptureAccess()
+                UserDefaults.standard.set(true, forKey: Self.permissionRequestedKey)
+                throw CaptureError.permissionPending
+            }
+        }
     }
     
     @MainActor private func computeSourceRect(for bounded: CGRect, on display: NSScreen) async throws -> (CGRect, CGSize) {
