@@ -70,3 +70,17 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+
+      - name: Update Homebrew Tap
+        env:
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          git clone https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/cjstremick/homebrew-tap.git
+          mkdir -p homebrew-tap/Casks
+          cp build/Build/Products/Release/vibeshot.rb homebrew-tap/Casks/vibeshot.rb
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/vibeshot.rb
+          git diff --cached --quiet || git commit -m "Update vibeshot to ${{ github.ref_name }}"
+          git push
