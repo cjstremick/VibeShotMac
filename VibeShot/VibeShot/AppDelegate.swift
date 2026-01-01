@@ -1,6 +1,7 @@
 import Cocoa
 import ScreenCaptureKit
 import Carbon.HIToolbox
+import ServiceManagement
 
 final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate {
     private var statusItem: NSStatusItem!
@@ -11,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
     private var hotKeyRef: EventHotKeyRef?
     private var eventHandlerRef: EventHandlerRef?
     private var markupEditor: MarkupEditorController? // Add strong reference
+    private var launchAtLoginItem: NSMenuItem?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -35,6 +37,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
         let captureItem = NSMenuItem(title: "Capture Region", action: #selector(startRegionCapture), keyEquivalent: "s")
         captureItem.keyEquivalentModifierMask = [.option, .control, .shift]
         menu.addItem(captureItem)
+        
+        menu.addItem(.separator())
+        
+        // Launch at Login option
+        let launchItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        launchItem.state = isLaunchAtLoginEnabled ? .on : .off
+        launchAtLoginItem = launchItem
+        menu.addItem(launchItem)
         
         menu.addItem(.separator())
         
@@ -151,6 +161,32 @@ Copyright Cj Stremick
     }
     
     @objc private func quit() { NSApp.terminate(nil) }
+    
+    // MARK: - Launch at Login
+    private var isLaunchAtLoginEnabled: Bool {
+        if #available(macOS 13.0, *) {
+            return SMAppService.mainApp.status == .enabled
+        } else {
+            return false
+        }
+    }
+    
+    @objc private func toggleLaunchAtLogin() {
+        if #available(macOS 13.0, *) {
+            do {
+                if isLaunchAtLoginEnabled {
+                    try SMAppService.mainApp.unregister()
+                } else {
+                    try SMAppService.mainApp.register()
+                }
+                launchAtLoginItem?.state = isLaunchAtLoginEnabled ? .on : .off
+            } catch {
+                showTransientAlert(title: "Launch at Login", text: "Failed to update login item: \(error.localizedDescription)")
+            }
+        } else {
+            showTransientAlert(title: "Launch at Login", text: "This feature requires macOS 13 or later.")
+        }
+    }
     
     // MARK: - HotKey
     private func registerGlobalHotKey() {
