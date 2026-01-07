@@ -47,6 +47,12 @@ brew tap cjstremick/tap
 brew install --cask vibeshot
 ```
 
+Since VibeShot is not signed using an Apple development key, Mac will refuse to run it.  To resolve that, run this command to tell Mac to remove it from quarantine.
+
+```bash
+xattr -dr com.apple.quarantine /Applications/VibeShot.app
+```
+
 #### From Source
 
 1. **Clone the repository:**
