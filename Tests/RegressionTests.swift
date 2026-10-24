@@ -155,8 +155,17 @@ struct RegressionTests {
             // Exact rendered-pixel and annotation-size checks above remain in place.
             require(range == afterRange && beforeLines == afterLines,
                     "Accepted line breaks changed for \(sample.debugDescription): \(beforeLines) -> \(afterLines)")
-            require(beforePositions == afterPositions,
-                    "Accepted glyph positions changed for \(sample.debugDescription): \(beforePositions) -> \(afterPositions)")
+            // TextKit on macOS 15 can differ by a few billionths of a point
+            // between live and standalone layouts. One millionth of a point
+            // tolerates that rounding while remaining far below a display pixel.
+            let glyphTolerance: CGFloat = 0.000001
+            let positionsMatch = beforePositions.count == afterPositions.count &&
+                zip(beforePositions, afterPositions).allSatisfy { before, after in
+                    abs(before.x - after.x) <= glyphTolerance &&
+                    abs(before.y - after.y) <= glyphTolerance
+                }
+            require(positionsMatch,
+                    "Accepted glyph positions changed beyond \(glyphTolerance) points for \(sample.debugDescription): \(beforePositions) -> \(afterPositions)")
             require(afterLines.count > 1, "Fixture must exercise wrapping or explicit line breaks")
             let clone = accepted.duplicate() as! TextElement
             require(clone.layoutWidth == accepted.layoutWidth && clone.bounds == accepted.bounds,
