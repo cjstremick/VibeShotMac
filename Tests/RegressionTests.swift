@@ -129,8 +129,8 @@ struct RegressionTests {
             manager.ensureLayout(for: container)
             let range = manager.glyphRange(for: container)
             let beforePositions = (range.location..<NSMaxRange(range)).map { manager.location(forGlyphAt: $0) }
-            var beforeLines: [NSRect] = []
-            manager.enumerateLineFragments(forGlyphRange: range) { rect, _, _, _, _ in beforeLines.append(rect) }
+            var beforeLines: [NSRange] = []
+            manager.enumerateLineFragments(forGlyphRange: range) { _, _, _, glyphRange, _ in beforeLines.append(glyphRange) }
             let beforeSize = field.frame.size
             let beforeOrigin = field.frame.origin
             require(container.containerSize.width == 110, "Editor width must stay tied to the screenshot edge")
@@ -147,9 +147,16 @@ struct RegressionTests {
             layout.manager.ensureLayout(for: layout.container)
             let afterRange = layout.manager.glyphRange(for: layout.container)
             let afterPositions = (afterRange.location..<NSMaxRange(afterRange)).map { layout.manager.location(forGlyphAt: $0) }
-            var afterLines: [NSRect] = []
-            layout.manager.enumerateLineFragments(forGlyphRange: afterRange) { rect, _, _, _, _ in afterLines.append(rect) }
-            require(beforePositions == afterPositions && beforeLines == afterLines, "Accepted glyphs reflowed")
+            var afterLines: [NSRange] = []
+            layout.manager.enumerateLineFragments(forGlyphRange: afterRange) { _, _, _, glyphRange, _ in afterLines.append(glyphRange) }
+            // A live NSTextView and a standalone layout manager can allocate different
+            // line-fragment rectangles on different macOS versions. Compare actual
+            // wrapping and glyph positions, not the unused allocation around a line.
+            // Exact rendered-pixel and annotation-size checks above remain in place.
+            require(range == afterRange && beforeLines == afterLines,
+                    "Accepted line breaks changed for \(sample.debugDescription): \(beforeLines) -> \(afterLines)")
+            require(beforePositions == afterPositions,
+                    "Accepted glyph positions changed for \(sample.debugDescription): \(beforePositions) -> \(afterPositions)")
             require(afterLines.count > 1, "Fixture must exercise wrapping or explicit line breaks")
             let clone = accepted.duplicate() as! TextElement
             require(clone.layoutWidth == accepted.layoutWidth && clone.bounds == accepted.bounds,
