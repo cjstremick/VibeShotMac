@@ -11,15 +11,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
     private var fullScreenCapture: NSImage?
     private var hotKeyRef: EventHotKeyRef?
     private var eventHandlerRef: EventHandlerRef?
-    private var markupEditor: MarkupEditorController? // Add strong reference
+    private var editors: [MarkupEditorController] = []
+    private var captureInProgress = false
     private var launchAtLoginItem: NSMenuItem?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        removeExpiredShareFiles()
         setupStatusBar()
+        setupApplicationMenu()
         registerGlobalHotKey()
     }
     
+    private func removeExpiredShareFiles() {
+        let manager = FileManager.default
+        let directory = manager.temporaryDirectory
+        guard let files = try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.creationDateKey]) else { return }
+        for file in files where file.lastPathComponent.hasPrefix("VibeShot-") {
+            let identifier = String(file.lastPathComponent.dropFirst("VibeShot-".count))
+            guard UUID(uuidString: identifier) != nil,
+                  let created = try? file.resourceValues(forKeys: [.creationDateKey]).creationDate,
+                  created < Date().addingTimeInterval(-86400) else { continue }
+            try? manager.removeItem(at: file)
+        }
+    }
+
     private func setupStatusBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
@@ -57,14 +73,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
     
     // MARK: Region Capture Flow
     @objc private func startRegionCapture() {
-        guard overlayController == nil else { return }
+        guard !captureInProgress, overlayController == nil else { return }
         let mouseLoc = NSEvent.mouseLocation
         guard let display = NSScreen.screens.first(where: { $0.frame.contains(mouseLoc) }) ?? NSScreen.main else {
             return
         }
+        captureInProgress = true
         overlayDisplay = display
         
         Task { @MainActor in
+            defer { self.captureInProgress = false }
             do {
                 // Capture full screen first (Freeze Frame)
                 let result = try await captureService.capture(rect: display.frame, on: display)
@@ -118,7 +136,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
             
             // Open markup editor and keep strong reference to prevent deallocation
             let editor = MarkupEditorController(baseImage: croppedImage)
-            self.markupEditor = editor // Keep strong reference
+            editors.append(editor)
+            editor.onClose = { [weak self, weak editor] in
+                guard let self else { return }
+                self.editors.removeAll { $0 === editor }
+                if self.editors.isEmpty { NSApp.setActivationPolicy(.accessory) }
+            }
+            NSApp.setActivationPolicy(.regular)
             editor.show()
         }
         
@@ -126,13 +150,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
     }
     
     private func crop(image: NSImage, to rect: CGRect) -> NSImage? {
-        let newImage = NSImage(size: rect.size)
-        newImage.lockFocus()
-        image.draw(in: NSRect(origin: .zero, size: rect.size), from: rect, operation: .copy, fraction: 1.0)
-        newImage.unlockFocus()
-        return newImage
+        let topRect = CGRect(x: rect.minX, y: image.size.height - rect.maxY,
+                             width: rect.width, height: rect.height)
+        return try? CompositeRenderer.crop(image, topOriginRect: topRect)
     }
-    
+
     @objc private func showAbout() {
         let alert = NSAlert()
         alert.messageText = "About VibeShot"
@@ -143,7 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, CaptureOverlayDelegate
         }
         
         alert.informativeText = """
-VibeShot v1.0
+VibeShot \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development")
 A simple screenshot capture and markup app made 100% with vibe coding.
 
 Copyright Cj Stremick
@@ -161,6 +183,50 @@ Copyright Cj Stremick
     }
     
     @objc private func quit() { NSApp.terminate(nil) }
+
+    func applicationWillTerminate(_ notification: Notification) { unregisterHotKey() }
+
+    func setupApplicationMenu() {
+        let main = NSMenu()
+        func section(_ title: String) -> NSMenu {
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            let menu = NSMenu(title: title)
+            item.submenu = menu
+            main.addItem(item)
+            return menu
+        }
+        func add(_ menu: NSMenu, _ title: String, _ action: Selector, _ key: String = "", target: AnyObject? = nil) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.target = target
+            menu.addItem(item)
+        }
+        let app = section("VibeShot")
+        add(app, "About VibeShot", #selector(showAbout), target: self)
+        app.addItem(.separator())
+        add(app, "Hide VibeShot", #selector(NSApplication.hide(_:)), "h")
+        add(app, "Quit VibeShot", #selector(quit), "q", target: self)
+        let file = section("File")
+        add(file, "Capture Region", #selector(startRegionCapture), target: self)
+        file.addItem(.separator())
+        add(file, "Save…", #selector(MarkupEditorController.saveScreenshot(_:)), "s")
+        add(file, "Print…", #selector(MarkupEditorController.printScreenshot(_:)), "p")
+        add(file, "Share…", #selector(MarkupEditorController.shareScreenshot(_:)))
+        add(file, "AirDrop…", #selector(MarkupEditorController.airDropScreenshot(_:)))
+        file.addItem(.separator())
+        add(file, "Close", #selector(NSWindow.performClose(_:)), "w")
+        let edit = section("Edit")
+        add(edit, "Undo", Selector(("undo:")), "z")
+        add(edit, "Redo", Selector(("redo:")), "Z")
+        edit.addItem(.separator())
+        add(edit, "Cut", #selector(NSText.cut(_:)), "x")
+        add(edit, "Copy", #selector(NSText.copy(_:)), "c")
+        add(edit, "Paste", #selector(NSText.paste(_:)), "v")
+        add(edit, "Delete", #selector(NSText.delete(_:)))
+        add(edit, "Select All", #selector(NSText.selectAll(_:)), "a")
+        let tools = section("Tools")
+        EditorMenus.populateTools(tools)
+        NSApp.mainMenu = main
+    }
     
     // MARK: - Launch at Login
     private var isLaunchAtLoginEnabled: Bool {

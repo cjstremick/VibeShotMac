@@ -28,34 +28,10 @@ final class QuickSCKitCapture: RegionCapturing {
         
         let filter = try await contentFilter(for: display)
         
-        return try await withCheckedThrowingContinuation { continuation in
-            let collector = FirstFrameCollector(continuation: continuation, size: bounded.size)
-            let stream = SCStream(filter: filter, configuration: config, delegate: nil)
-            
-            do {
-                try stream.addStreamOutput(collector, type: .screen, sampleHandlerQueue: .main)
-                collector.stream = stream
-                
-                stream.startCapture { error in
-                    if let error = error {
-                        // Only resume if not already resumed (e.g. by timeout)
-                        if collector.continuation != nil {
-                            continuation.resume(throwing: error)
-                            collector.continuation = nil
-                            collector.stream = nil
-                        }
-                    }
-                }
-                
-                // Start timeout timer
-                collector.startTimeout()
-                
-            } catch {
-                continuation.resume(throwing: error)
-            }
-        }
+        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+        return Result(image: NSImage(cgImage: image, size: bounded.size))
     }
-    
+
     // MARK: - Helpers
     private static let permissionRequestedKey = "ScreenCapturePermissionRequested"
     
@@ -94,7 +70,8 @@ final class QuickSCKitCapture: RegionCapturing {
                            height: bounded.height)
         let flippedY = display.frame.height - local.origin.y - local.height
         let sourceRect = CGRect(x: local.origin.x, y: flippedY, width: local.width, height: local.height)
-        return (sourceRect, bounded.size)
+        return (sourceRect, CGSize(width: bounded.width * display.backingScaleFactor,
+                                   height: bounded.height * display.backingScaleFactor))
     }
     
     @MainActor private func contentFilter(for display: NSScreen) async throws -> SCContentFilter {
@@ -102,52 +79,5 @@ final class QuickSCKitCapture: RegionCapturing {
         guard let id = display.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
               let scDisplay = content.displays.first(where: { $0.displayID == id }) else { throw CaptureError.noDisplay }
         return SCContentFilter(display: scDisplay, excludingApplications: [], exceptingWindows: [])
-    }
-}
-
-@available(macOS 13.0, *)
-private final class FirstFrameCollector: NSObject, SCStreamOutput {
-    private let ciContext = CIContext(options: nil)
-    var continuation: CheckedContinuation<QuickSCKitCapture.Result, Error>?
-    private let size: CGSize
-    var stream: SCStream?
-    
-    init(continuation: CheckedContinuation<QuickSCKitCapture.Result, Error>, size: CGSize) {
-        self.continuation = continuation
-        self.size = size
-    }
-    
-    func startTimeout() {
-        Task {
-            try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second timeout
-            if let continuation = self.continuation {
-                self.continuation = nil
-                continuation.resume(throwing: QuickSCKitCapture.CaptureError.frameTimeout)
-                try? await self.stream?.stopCapture()
-                self.stream = nil
-            }
-        }
-    }
-    
-    func stream(_ stream: SCStream,
-                didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
-                of outputType: SCStreamOutputType) {
-        guard let continuation = continuation, outputType == .screen,
-              let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        
-        self.continuation = nil
-        
-        let ci = CIImage(cvImageBuffer: buffer)
-        if let cgImage = ciContext.createCGImage(ci, from: ci.extent) {
-            let nsImage = NSImage(cgImage: cgImage, size: size)
-            continuation.resume(returning: QuickSCKitCapture.Result(image: nsImage))
-        } else {
-            continuation.resume(throwing: QuickSCKitCapture.CaptureError.frameTimeout)
-        }
-        
-        Task {
-            try? await stream.stopCapture()
-            self.stream = nil
-        }
     }
 }

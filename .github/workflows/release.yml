@@ -1,86 +1,85 @@
 name: Release
-
 on:
   push:
-    tags:
-      - 'v*'
-
+    tags: ['v*']
+permissions:
+  contents: write
 jobs:
   release:
-    name: Create Release
-    runs-on: macos-latest
-    permissions:
-      contents: write
-
+    runs-on: macos-15
+    timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Xcode version
-        uses: maxim-lobanov/setup-xcode@v1
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: latest-stable
-
-      - name: Build
+          xcode-version: '16.4'
+      - name: Regression checks
+        run: ./scripts/test.sh
+      - name: Check Xcode project
+        run: >-
+          xcodebuild -project VibeShot/VibeShot.xcodeproj -scheme VibeShot
+          -configuration Release -destination 'platform=macOS'
+          -derivedDataPath build/xcode build
+      - name: Build universal app
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          BUILD_NUMBER: ${{ github.run_number }}
         run: |
-          xcodebuild -project VibeShot/VibeShot.xcodeproj \
-            -scheme VibeShot \
-            -destination 'platform=macOS' \
-            -configuration Release \
-            -derivedDataPath build \
-            clean build CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO
-
-      - name: Archive
+          VERSION="${RELEASE_TAG#v}"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Use a vMAJOR.MINOR.PATCH release tag'; exit 1; }
+          export VERSION
+          ./scripts/package.sh
+      - name: Generate Homebrew cask
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
         run: |
-          cd build/Build/Products/Release
-          zip -r VibeShot.zip VibeShot.app
-
-      - name: Generate Homebrew Cask
-        run: |
-          cd build/Build/Products/Release
-          
-          # Calculate SHA256
-          SHA256=$(shasum -a 256 VibeShot.zip | awk '{print $1}')
-          
-          # Get version from tag (strip 'v' prefix)
-          VERSION_TAG=${{ github.ref_name }}
-          VERSION_NUM=${VERSION_TAG#v}
-          
-          # Create Cask file
-          cat <<EOF > vibeshot.rb
-          cask "vibeshot" do
-            version "$VERSION_NUM"
-            sha256 "$SHA256"
-
-            url "https://github.com/${{ github.repository }}/releases/download/$VERSION_TAG/VibeShot.zip"
+          python3 - <<'PY'
+          import hashlib, os, pathlib
+          version = os.environ['RELEASE_TAG'][1:]
+          checksum = hashlib.sha256(pathlib.Path('build/VibeShot.zip').read_bytes()).hexdigest()
+          repository = os.environ['RELEASE_REPOSITORY']
+          pathlib.Path('build/vibeshot.rb').write_text(f'''cask "vibeshot" do
+            version "{version}"
+            sha256 "{checksum}"
+            url "https://github.com/{repository}/releases/download/v{version}/VibeShot.zip"
             name "VibeShot"
             desc "Screenshot and markup tool"
-            homepage "https://github.com/${{ github.repository }}"
-
+            homepage "https://github.com/{repository}"
+            depends_on macos: ">= :sequoia"
             app "VibeShot.app"
           end
-          EOF
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+          ''')
+          PY
+      - uses: softprops/action-gh-release@v2
         with:
           files: |
-            build/Build/Products/Release/VibeShot.zip
-            build/Build/Products/Release/vibeshot.rb
-          draft: false
-          prerelease: false
+            build/VibeShot.zip
+            build/vibeshot.rb
           generate_release_notes: true
-
-      - name: Update Homebrew Tap
+      - name: Update Homebrew tap when configured
         env:
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          git clone https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/cjstremick/homebrew-tap.git
-          mkdir -p homebrew-tap/Casks
-          cp build/Build/Products/Release/vibeshot.rb homebrew-tap/Casks/vibeshot.rb
-          cd homebrew-tap
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [[ -z "$TAP_GITHUB_TOKEN" ]]; then
+            echo 'No tap token configured; cask is available in the release assets.'
+            exit 0
+          fi
+          # Keep credentials out of the remote URL and persisted git configuration.
+          cat > "$RUNNER_TEMP/vibeshot-askpass" <<'SH'
+          #!/bin/sh
+          case "$1" in *Username*) printf '%s\n' 'x-access-token';; *) printf '%s\n' "$TAP_GITHUB_TOKEN";; esac
+          SH
+          chmod 700 "$RUNNER_TEMP/vibeshot-askpass"
+          export GIT_ASKPASS="$RUNNER_TEMP/vibeshot-askpass" GIT_TERMINAL_PROMPT=0
+          trap 'rm -f "$GIT_ASKPASS"' EXIT
+          git clone https://github.com/cjstremick/homebrew-tap.git build/homebrew-tap
+          mkdir -p build/homebrew-tap/Casks
+          cp build/vibeshot.rb build/homebrew-tap/Casks/vibeshot.rb
+          cd build/homebrew-tap
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
           git add Casks/vibeshot.rb
-          git diff --cached --quiet || git commit -m "Update vibeshot to ${{ github.ref_name }}"
+          git diff --cached --quiet || git commit -m "Update vibeshot to $RELEASE_TAG"
           git push

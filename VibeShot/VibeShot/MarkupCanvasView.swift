@@ -63,6 +63,7 @@ final class MarkupCanvasView: NSView {
     private var dragStartPoint: CGPoint?
     private var currentDragPoint: CGPoint?
     private var isDrawing = false
+    var highlightColor: NSColor = .systemYellow
     private var currentTool: MarkupTool = .arrow
     
     // Selection-specific properties
@@ -73,15 +74,17 @@ final class MarkupCanvasView: NSView {
     private var isResizing = false
     private var activeResizeHandle: ResizeHandle?
     private var resizingElement: (any ResizableElement)?
-    private var isResizingArrowStart = false  // For arrow elements: true = start point, false = end point
+    private var isResizingStart = false  // For arrow elements: true = start point, false = end point
     
     // Crop-specific properties
     var cropSelectionRect: CGRect?
     
     // Text editing properties
+    private var editingTextLayout: AnnotationTextLayout?
+    private var originalText: String?
+    private var isNewTextElement = false
     private var currentTextElement: TextElement?
     var textView: MarkupTextView?
-    private var scrollView: NSScrollView?
     
     init(baseImage: NSImage) {
         self.image = baseImage
@@ -167,6 +170,14 @@ final class MarkupCanvasView: NSView {
         // Draw preview based on current tool
         if isDrawing, !isResizing, let startPoint = dragStartPoint, let endPoint = currentDragPoint {
             switch currentTool {
+            case .highlighter:
+                let rect = CGRect(x: min(startPoint.x, endPoint.x), y: min(startPoint.y, endPoint.y),
+                                  width: abs(endPoint.x - startPoint.x), height: abs(endPoint.y - startPoint.y))
+                HighlighterElement(rect: rect, color: highlightColor).draw(in: context)
+            case .line:
+                let line = LineElement(startPoint: startPoint, endPoint: endPoint,
+                                       color: MarkupColorManager.shared.currentColor.withAlphaComponent(0.7))
+                line.draw(in: context)
             case .arrow:
                 drawPreviewArrow(from: startPoint, to: endPoint, in: context)
             case .selection:
@@ -477,11 +488,11 @@ final class MarkupCanvasView: NSView {
             if selectedElements.count == 1, let element = selectedElements.first {
                 if let resizable = element as? (any ResizableElement) {
                     // Special handling for arrows - they have handles at endpoints
-                    if let arrow = element as? ArrowElement {
-                        if let isStart = arrow.hitTestArrowHandle(point: point) {
+                    if let arrow = element as? LineElement {
+                        if let isStart = arrow.hitTestEndpoint(point: point) {
                             isResizing = true
                             resizingElement = arrow
-                            isResizingArrowStart = isStart
+                            isResizingStart = isStart
                             isMovingSelection = false
                             delegate?.canvasWillResize()
                             delegate?.canvasDidStartDrawing(at: point)
@@ -530,8 +541,8 @@ final class MarkupCanvasView: NSView {
         
         // Handle resizing
         if isResizing, let point = currentDragPoint {
-            if let arrow = resizingElement as? ArrowElement {
-                if isResizingArrowStart {
+            if let arrow = resizingElement as? LineElement {
+                if isResizingStart {
                     arrow.setStartPoint(point)
                 } else {
                     arrow.setEndPoint(point)
@@ -586,7 +597,7 @@ final class MarkupCanvasView: NSView {
             isResizing = false
             activeResizeHandle = nil
             resizingElement = nil
-            isResizingArrowStart = false
+            isResizingStart = false
             needsDisplay = true
             return
         }
@@ -687,16 +698,21 @@ final class MarkupCanvasView: NSView {
         for element in markupElements.reversed() {
             if let textElement = element as? TextElement, textElement.contains(point: point) {
                 // Edit existing text element
+                originalText = textElement.text
+                isNewTextElement = false
                 editTextElement(textElement)
                 return
             }
         }
         
         // Create new text element
-        let textElement = TextElement(position: point, text: "", color: MarkupColorManager.shared.currentColor)
+        let textElement = TextElement(position: point, text: "", color: MarkupColorManager.shared.currentColor,
+                                      layoutWidth: max(1, image.size.width - point.x))
         markupElements.append(textElement)
         needsDisplay = true
         
+        originalText = nil
+        isNewTextElement = true
         editTextElement(textElement)
     }
     
@@ -720,63 +736,48 @@ final class MarkupCanvasView: NSView {
     
     private func createTextViewForEditing(_ textElement: TextElement) {
         
-        // Ensure we clean up any existing text view first
         textView?.removeFromSuperview()
-        scrollView?.removeFromSuperview()
-        
-        // Create and configure text view for auto-sizing
-        let newTextView = MarkupTextView()
-        newTextView.string = textElement.text.isEmpty ? "Type here..." : textElement.text
+        let layout = textElement.makeLayout(text: textElement.text)
+        editingTextLayout = layout
+        let newTextView = MarkupTextView(frame: CGRect(origin: textElement.bounds.origin,
+                                                     size: layout.size), textContainer: layout.container)
+        newTextView.allowsUndo = true
         newTextView.isEditable = true
         newTextView.isSelectable = true
-        newTextView.drawsBackground = false  // Make background transparent
-        newTextView.textColor = MarkupColorManager.shared.currentColor
-        newTextView.font = NSFont.systemFont(ofSize: 18.0, weight: .medium)
+        newTextView.drawsBackground = false
+        newTextView.isRichText = false
+        newTextView.importsGraphics = false
+        newTextView.typingAttributes = layout.attributes
+        newTextView.textColor = textElement.textColor
+        newTextView.font = AnnotationTextLayout.font
         newTextView.delegate = self
-        
-        // Set custom delegate for Cmd+Enter handling
         newTextView.markupDelegate = self
-        
-        // Configure for auto-sizing without scroll view
         newTextView.isVerticallyResizable = true
         newTextView.isHorizontallyResizable = false
-        newTextView.textContainer?.widthTracksTextView = true
-        newTextView.textContainer?.containerSize = CGSize(width: 300, height: CGFloat.greatestFiniteMagnitude)
-        newTextView.maxSize = CGSize(width: 300, height: CGFloat.greatestFiniteMagnitude)
-        newTextView.minSize = CGSize(width: 200, height: 30)
-        
-        // Remove text container padding to avoid double spacing
-        newTextView.textContainerInset = NSSize(width: 4, height: 4)
-        newTextView.textContainer?.lineFragmentPadding = 0
-        
-        // Position and size the text view
-        let bounds = textElement.bounds
-        let initialFrame = CGRect(
-            x: bounds.origin.x,
-            y: bounds.origin.y,
-            width: max(bounds.width, 200),
-            height: max(bounds.height, 30)
-        )
-        newTextView.frame = initialFrame
-        
-        // Remove the border - we don't need it with transparent background
-        newTextView.wantsLayer = false
-        
+        newTextView.textContainerInset = .zero
+        newTextView.textContainer?.widthTracksTextView = false
+        newTextView.textContainer?.heightTracksTextView = false
+        newTextView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        newTextView.minSize = .zero
         addSubview(newTextView)
         self.textView = newTextView
-        self.scrollView = nil // Not using scroll view anymore
-        
-        // Focus and select the text view content
-        DispatchQueue.main.async {
+        newTextView.undoManager?.removeAllActions()
+        resizeTextEditor()
+
+        DispatchQueue.main.async { [weak self, weak newTextView] in
+            guard let self, let newTextView, self.textView === newTextView else { return }
             self.window?.makeFirstResponder(newTextView)
-            if textElement.text.isEmpty {
-                newTextView.selectAll(nil) // Select placeholder text
-            } else {
-                newTextView.selectAll(nil) // Select existing text
-            }
+            newTextView.selectAll(nil)
         }
     }
-    
+
+    private func resizeTextEditor() {
+        guard let textView, let manager = textView.layoutManager,
+              let container = textView.textContainer else { return }
+        // Keep the container width fixed; measuring wrapped text must never feed back into it.
+        textView.frame.size = AnnotationTextLayout.size(manager: manager, container: container)
+    }
+
     private func endTextEditing() {
         endTextEditing(shouldCancel: false)
     }
@@ -786,13 +787,16 @@ final class MarkupCanvasView: NSView {
               let textElement = currentTextElement else { return }
         
         if shouldCancel {
-            // Cancel editing - always remove the text element
-            markupElements.removeAll { $0.id == textElement.id }
+            if isNewTextElement {
+                markupElements.removeAll { $0.id == textElement.id }
+            } else {
+                textElement.updateText(originalText ?? textElement.text)
+            }
         } else {
             // Normal completion - update the text element with the final text
-            let finalText = textView.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            let finalText = textView.string
             
-            if finalText.isEmpty {
+            if finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 // Remove empty text elements
                 markupElements.removeAll { $0.id == textElement.id }
             } else {
@@ -801,14 +805,17 @@ final class MarkupCanvasView: NSView {
             }
         }
         
+        // Text-session undo is separate from the editor's annotation snapshots.
+        textView.undoManager?.removeAllActions()
         // Clean up
         textView.removeFromSuperview()
-        scrollView?.removeFromSuperview()
         self.textView = nil
-        self.scrollView = nil
+        editingTextLayout = nil
         currentTextElement?.isSelected = false
         currentTextElement?.isBeingEdited = false
         currentTextElement = nil
+        originalText = nil
+        isNewTextElement = false
         
         needsDisplay = true
         
@@ -844,34 +851,9 @@ final class MarkupCanvasView: NSView {
 // MARK: - Text View Delegate
 extension MarkupCanvasView: NSTextViewDelegate {
     func textDidChange(_ notification: Notification) {
-        // Auto-resize the text view to fit content
-        guard let textView = self.textView else { return }
-        
-        // Calculate the size needed for the current text
-        guard let textContainer = textView.textContainer,
-              let layoutManager = textView.layoutManager else {
-            return
-        }
-        
-        // Force layout to get accurate measurements
-        layoutManager.ensureLayout(for: textContainer)
-        let usedRect = layoutManager.usedRect(for: textContainer)
-        
-        // Calculate new size with padding
-        let padding: CGFloat = 8
-        let newWidth = max(usedRect.width + padding * 2, 200)
-        let newHeight = max(usedRect.height + padding * 2, 30)
-        
-        // Update text view frame
-        var frame = textView.frame
-        frame.size.width = newWidth
-        frame.size.height = newHeight
-        textView.frame = frame
-        
-        // Update text container size
-        textContainer.containerSize = CGSize(width: newWidth - padding, height: CGFloat.greatestFiniteMagnitude)
+        resizeTextEditor()
     }
-    
+
     func textDidEndEditing(_ notification: Notification) {
         // Only end editing if it's not due to a command we're handling
         let reasonCode = notification.userInfo?["NSTextMovement"] as? Int

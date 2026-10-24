@@ -47,6 +47,7 @@ final class TitleBarToolbarView: NSView {
     private var thicknessButton: NSButton!
     private var colorButton: NSButton!
     private var activeMenu: NSMenu?
+    private var displayedColor = MarkupColorManager.shared.currentColor
     
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -117,10 +118,12 @@ final class TitleBarToolbarView: NSView {
         
         // Add line thickness picker button
         thicknessButton = createThicknessButton()
+        thicknessButton.setAccessibilityLabel("Line Thickness")
         stackView.addArrangedSubview(thicknessButton)
         
         // Add color picker button
         colorButton = createColorButton()
+        colorButton.setAccessibilityLabel("Choose Color")
         stackView.addArrangedSubview(colorButton)
         
         // Add stack view to toolbar
@@ -141,17 +144,9 @@ final class TitleBarToolbarView: NSView {
     }
     
     override var intrinsicContentSize: NSSize {
-        // Calculate the actual size needed for the toolbar
-        // Each tool button (7): 40pt wide
-        // Separator: 1pt wide
-        // Thickness button: 40pt wide
-        // Color button: 40pt wide
-        // Spacing between items: 8pt each (8 spaces total: 7 tools + 1 separator + thickness + color = 9 items - 1 = 8 spaces)
-        // Leading padding: 12pt
-        // Trailing padding: 16pt (for rounded corner clearance)
-        let totalWidth = (7 * 40) + 1 + 40 + 40 + (8 * 8) + 12 + 16
+        let count = MarkupTool.allCases.count
+        let totalWidth = (count * 40) + 1 + 40 + 40 + ((count + 2) * 8) + 12 + 16
         let size = NSSize(width: CGFloat(totalWidth), height: 32)
-        print("DEBUG: TitleBarToolbarView intrinsicContentSize calculated as: \(size)")
         return size
     }
     
@@ -195,6 +190,7 @@ final class TitleBarToolbarView: NSView {
         
         // Set tooltip with keyboard shortcut
         button.toolTip = tool.displayNameWithShortcut
+        button.setAccessibilityLabel(tool.displayName)
         
         button.imageScaling = .scaleProportionallyDown
         button.bezelStyle = .texturedSquare  // Use textured square for title bar compatibility
@@ -335,20 +331,13 @@ final class TitleBarToolbarView: NSView {
         activeMenu = menu
         
         for thickness in MarkupLineThicknessManager.shared.availableThicknesses {
-            let item = NSMenuItem()
-            
-            // Create a custom view that shows the line thickness visually
-            let menuItemView = createThicknessMenuItemView(thickness: thickness)
-            item.view = menuItemView
-            
-            // Add checkmark for current thickness
-            if thickness == MarkupLineThicknessManager.shared.currentThickness {
-                item.state = .on
-            }
-            
+            let item = NSMenuItem(title: "\(Int(thickness)) pt", action: #selector(thicknessMenuItemSelected(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = Int(thickness * 10)
+            item.state = thickness == MarkupLineThicknessManager.shared.currentThickness ? .on : .off
             menu.addItem(item)
         }
-        
+
         // Show menu below the button
         let buttonFrame = button.frame
         let menuLocation = NSPoint(x: buttonFrame.minX, y: buttonFrame.minY)
@@ -357,42 +346,7 @@ final class TitleBarToolbarView: NSView {
         activeMenu = nil
     }
     
-    private func createThicknessMenuItemView(thickness: CGFloat) -> NSView {
-        let containerView = NSView()
-        containerView.frame = NSRect(x: 0, y: 0, width: 120, height: 24)
-        
-        // Create a button that covers the entire menu item area
-        let button = NSButton()
-        button.frame = containerView.bounds
-        button.title = ""
-        button.bezelStyle = .texturedSquare  // Use textured square for title bar compatibility
-        button.isBordered = false
-        button.setButtonType(.momentaryPushIn)
-        button.isBordered = false
-        button.target = self
-        button.action = #selector(thicknessMenuItemSelected(_:))
-        button.tag = Int(thickness * 10) // Store thickness as tag (e.g., 20 for 2.0pt)
-        
-        // Create a custom view that draws the line thickness
-        let lineView = ThicknessPreviewView(thickness: thickness)
-        lineView.frame = NSRect(x: 8, y: 6, width: 80, height: 12)
-        
-        // Add label with point size using adaptive text color
-        let label = NSTextField(labelWithString: "\(Int(thickness))pt")
-        label.font = NSFont.systemFont(ofSize: 11)
-        label.textColor = NSColor.labelColor  // Use labelColor for better dark mode support
-        label.frame = NSRect(x: 92, y: 4, width: 25, height: 16)
-        
-        // Add visual elements to the button
-        button.addSubview(lineView)
-        button.addSubview(label)
-        
-        containerView.addSubview(button)
-        
-        return containerView
-    }
-    
-    @objc private func thicknessMenuItemSelected(_ sender: NSButton) {
+    @objc private func thicknessMenuItemSelected(_ sender: NSMenuItem) {
         let thickness = CGFloat(sender.tag) / 10.0 // Convert back from tag (e.g., 20 -> 2.0)
         MarkupLineThicknessManager.shared.currentThickness = thickness
         updateThicknessButton()
@@ -401,10 +355,12 @@ final class TitleBarToolbarView: NSView {
         activeMenu?.cancelTracking()
     }
     
+    func showColorPicker() { colorButtonPressed(colorButton) }
+
     @objc private func colorButtonPressed(_ sender: NSButton) {
         // Create and show color picker
         let colorPanel = NSColorPanel.shared
-        colorPanel.color = MarkupColorManager.shared.currentColor
+        colorPanel.color = displayedColor
         colorPanel.isContinuous = true // Enable continuous updates for real-time color changes
         
         // Remove any existing observer first to avoid duplicates
@@ -441,7 +397,7 @@ final class TitleBarToolbarView: NSView {
         
         // Create a color preview view with rounded corners
         let colorPreview = NSView()
-        let currentColor = MarkupColorManager.shared.currentColor
+        let currentColor = displayedColor
         colorPreview.wantsLayer = true
         colorPreview.layer?.backgroundColor = currentColor.cgColor
         colorPreview.layer?.cornerRadius = 4
@@ -464,6 +420,7 @@ final class TitleBarToolbarView: NSView {
     }
     
     func updateColor(_ color: NSColor) {
+        displayedColor = color
         updateColorButton()
     }
     

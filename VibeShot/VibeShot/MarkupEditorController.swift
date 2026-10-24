@@ -1,10 +1,17 @@
 import Cocoa
-import SwiftUI
+import UniformTypeIdentifiers
 
 /// Main markup editor window controller
-final class MarkupEditorController: NSWindowController {
+final class MarkupEditorController: NSWindowController, NSWindowDelegate {
+    var onClose: (() -> Void)?
+    private var scrollView: NSScrollView!
+    private var sharingPicker: NSSharingServicePicker?
+    private var sharingService: NSSharingService?
+    private var sharedFile: URL?
+    private var closedWhileSharing = false
     private var baseImage: NSImage
     private var markupElements: [any MarkupElement] = []
+    private var highlightColor: NSColor = .systemYellow
     private var currentTool: MarkupTool = .arrow  // Start with arrow tool selected
     internal var selectedElement: (any MarkupElement)?
     
@@ -24,8 +31,8 @@ final class MarkupEditorController: NSWindowController {
     private var canvasView: MarkupCanvasView!
     private var titleBarToolbar: TitleBarToolbarView!
     
-    // Minimum window width to ensure title bar toolbar doesn't get clipped
-    private static let minimumWindowWidth: CGFloat = 700
+    // The native toolbar provides overflow when the editor is narrow.
+    private static let minimumWindowWidth: CGFloat = 420
     
     init(baseImage: NSImage) {
         self.baseImage = baseImage
@@ -43,7 +50,7 @@ final class MarkupEditorController: NSWindowController {
         
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: windowSize),
-            styleMask: [.titled, .closable, .miniaturizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
@@ -62,23 +69,14 @@ final class MarkupEditorController: NSWindowController {
         fatalError("init(coder:) has not been implemented")
     }
     
-    deinit {
-        // Clean up notification observers
-        NotificationCenter.default.removeObserver(
-            self,
-            name: NSColorPanel.colorDidChangeNotification,
-            object: NSColorPanel.shared
-        )
-        
-        // Clean up distributed notification center observers
-        DistributedNotificationCenter.default().removeObserver(self)
-    }
-    
     private func setupWindow() {
         guard let window = window else { return }
         
         window.title = "VibeShot Editor"
         window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.minSize = NSSize(width: Self.minimumWindowWidth, height: 180)
+        fitWindowToImage()
         window.center()
         
         // Configure title bar toolbar
@@ -121,11 +119,7 @@ final class MarkupEditorController: NSWindowController {
         canvasView.needsDisplay = true
         
         // Update window size if image size changed
-        if let window = self.window {
-            let newWidth = max(baseImage.size.width, Self.minimumWindowWidth)
-            let newSize = NSSize(width: newWidth, height: baseImage.size.height)
-            window.setContentSize(newSize)
-        }
+        updateCanvasSize()
     }
     
     private func performRedo() {
@@ -146,88 +140,51 @@ final class MarkupEditorController: NSWindowController {
         canvasView.needsDisplay = true
         
         // Update window size if image size changed
-        if let window = self.window {
-            let newWidth = max(baseImage.size.width, Self.minimumWindowWidth)
-            let newSize = NSSize(width: newWidth, height: baseImage.size.height)
-            window.setContentSize(newSize)
-        }
+        updateCanvasSize()
     }
     
+    private func fitWindowToImage() {
+        guard let window else { return }
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame.size ?? NSSize(width: 1200, height: 800)
+        window.setContentSize(NSSize(width: min(max(baseImage.size.width, Self.minimumWindowWidth), visible.width - 40),
+                                     height: min(max(baseImage.size.height, 180), visible.height - 100)))
+    }
+
     private func setupLayout() {
-        guard let window = window else { return }
-        
-        let containerView = NSView()
-        containerView.wantsLayer = true
-        containerView.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        
-        // Create canvas container for centering (toolbar is now in title bar)
-        let canvasContainer = NSView()
-        canvasContainer.wantsLayer = true
-        
-        containerView.addSubview(canvasContainer)
-        canvasContainer.translatesAutoresizingMaskIntoConstraints = false
-        
-        // Canvas container fills the entire window (no traditional toolbar)
-        NSLayoutConstraint.activate([
-            canvasContainer.topAnchor.constraint(equalTo: containerView.topAnchor),
-            canvasContainer.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
-            canvasContainer.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
-            canvasContainer.bottomAnchor.constraint(equalTo: containerView.bottomAnchor)
-        ])
-        
-        // Add canvas to the container
-        canvasContainer.addSubview(canvasView)
-        canvasView.translatesAutoresizingMaskIntoConstraints = false
-        
-        // Center the canvas in the container
-        // The canvas will size itself via intrinsicContentSize (matching the image size)
-        NSLayoutConstraint.activate([
-            canvasView.centerXAnchor.constraint(equalTo: canvasContainer.centerXAnchor),
-            canvasView.centerYAnchor.constraint(equalTo: canvasContainer.centerYAnchor),
-            // Ensure canvas doesn't exceed container bounds (scale down if needed, though we prefer scrolling or window resizing)
-            canvasView.widthAnchor.constraint(lessThanOrEqualTo: canvasContainer.widthAnchor),
-            canvasView.heightAnchor.constraint(lessThanOrEqualTo: canvasContainer.heightAnchor)
-        ])
-        
-        window.contentView = containerView
-        
-        // Ensure delegate is properly set after layout
-        canvasView.delegate = self
-        
-        // Set up appearance change observers for the container background
-        setupContainerAppearanceObserver(for: containerView, canvasContainer: canvasContainer)
+        scrollView = NSScrollView()
+        scrollView.contentView = CenteredClipView()
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.allowsMagnification = true
+        scrollView.minMagnification = 0.1
+        scrollView.maxMagnification = 4
+        canvasView.translatesAutoresizingMaskIntoConstraints = true
+        canvasView.frame = NSRect(origin: .zero, size: baseImage.size)
+        scrollView.documentView = canvasView
+        window?.contentView = scrollView
     }
-    
-    private func setupContainerAppearanceObserver(for containerView: NSView, canvasContainer: NSView) {
-        // Listen for system appearance changes to update background colors
-        DistributedNotificationCenter.default().addObserver(
-            forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
-            object: nil,
-            queue: .main
-        ) { [weak containerView, weak canvasContainer] _ in
-            containerView?.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-            canvasContainer?.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        }
+
+    private func updateCanvasSize() {
+        canvasView.frame.size = baseImage.size
+        canvasView.invalidateIntrinsicContentSize()
     }
-    
+
+    func windowWillClose(_ notification: Notification) {
+        canvasView.endTextEditingIfActive()
+        if sharedFile == nil { onClose?() } else { closedWhileSharing = true }
+    }
+
     private func configureTitleBarToolbar() {
         guard let window = window else { return }
         
-        // Enable layer for proper rendering
-        titleBarToolbar.wantsLayer = true
-        
-        // Ensure the toolbar has the correct frame based on intrinsic content size
-        let intrinsicSize = titleBarToolbar.intrinsicContentSize
-        titleBarToolbar.frame = NSRect(origin: .zero, size: intrinsicSize)
-        
-        // Create title bar accessory view controller
-        let accessoryViewController = NSTitlebarAccessoryViewController()
-        accessoryViewController.view = titleBarToolbar
-        accessoryViewController.layoutAttribute = .trailing
-        
-        // Add the accessory view controller to the window
-        window.addTitlebarAccessoryViewController(accessoryViewController)
-        
+        let toolbar = NSToolbar(identifier: "VibeShotEditor")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        window.toolbar = toolbar
+        window.toolbarStyle = .expanded
+
         // Initialize title bar toolbar state
         titleBarToolbar.updateColor(MarkupColorManager.shared.currentColor)
         titleBarToolbar.updateThickness(MarkupLineThicknessManager.shared.currentThickness)
@@ -260,15 +217,21 @@ extension MarkupEditorController: MarkupToolbarDelegate {
         
         // Update title bar toolbar selection
         titleBarToolbar.selectTool(tool)
-        
+        titleBarToolbar.updateColor(tool == .highlighter ? highlightColor : MarkupColorManager.shared.currentColor)
+        canvasView.highlightColor = highlightColor
+
         // Communicate the tool change to the canvas
         canvasView.setCurrentTool(tool)
         canvasView.needsDisplay = true
     }
     
     func toolbarDidSelectColor(_ color: NSColor) {
-        // Store the new color for future elements
-        MarkupColorManager.shared.currentColor = color
+        if currentTool == .highlighter {
+            highlightColor = color
+            canvasView.highlightColor = color
+        } else {
+            MarkupColorManager.shared.currentColor = color
+        }
         
         // Update title bar toolbar
         titleBarToolbar.updateColor(color)
@@ -281,7 +244,7 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         switch currentTool {
         case .selection:
             handleSelectionStart(at: point)
-        case .arrow, .rectangle, .blur:
+        case .arrow, .line, .rectangle, .blur, .highlighter:
             // Will handle in canvasDidFinishDrawing
             break
         case .stepCounter:
@@ -308,6 +271,18 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         switch currentTool {
         case .selection:
             handleSelectionFinish(from: startPoint, to: endPoint)
+        case .highlighter:
+            let rect = CGRect(x: min(startPoint.x, endPoint.x), y: min(startPoint.y, endPoint.y),
+                              width: abs(endPoint.x - startPoint.x), height: abs(endPoint.y - startPoint.y))
+            guard rect.width >= 3, rect.height >= 3 else { return }
+            pushUndoState()
+            markupElements.append(HighlighterElement(rect: rect, color: highlightColor))
+            canvasView.markupElements = markupElements
+        case .line:
+            guard hypot(endPoint.x - startPoint.x, endPoint.y - startPoint.y) >= 3 else { return }
+            pushUndoState()
+            markupElements.append(LineElement(startPoint: startPoint, endPoint: endPoint))
+            canvasView.markupElements = markupElements
         case .arrow:
             // Calculate the distance of the arrow
             let distance = sqrt(pow(endPoint.x - startPoint.x, 2) + pow(endPoint.y - startPoint.y, 2))
@@ -418,9 +393,7 @@ extension MarkupEditorController: MarkupCanvasDelegate {
             if let keyCharacter = event.charactersIgnoringModifiers?.lowercased() {
                 for tool in MarkupTool.allCases {
                     if keyCharacter == tool.keyboardShortcut {
-                        currentTool = tool
-                        titleBarToolbar.selectTool(tool)
-                        canvasView.setCurrentTool(tool)
+                        toolbarDidSelectTool(tool)
                         return
                     }
                 }
@@ -441,6 +414,7 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         // Switch to the requested tool (e.g., from click-to-select)
         currentTool = tool
         titleBarToolbar.selectTool(tool)
+        titleBarToolbar.updateColor(tool == .highlighter ? highlightColor : MarkupColorManager.shared.currentColor)
         canvasView.setCurrentTool(tool)
     }
     
@@ -519,6 +493,7 @@ extension MarkupEditorController: MarkupCanvasDelegate {
     private func moveElement(_ element: any MarkupElement, by translation: CGPoint) {
         // MarkupElement protocol already has move(by:) method
         element.move(by: translation)
+        (element as? BlurElement)?.finalizeBlur()
     }
     
     private func handleStepCounterStamp(at point: CGPoint) {
@@ -579,9 +554,13 @@ extension MarkupEditorController: MarkupCanvasDelegate {
     }
     
     private func copyCompositeToClipboard() {
-        let composite = createCompositeImage()
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.writeObjects([composite])
+        do {
+            let composite = try createCompositeImage()
+            let data = try CompositeRenderer.png(composite)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setData(data, forType: .png)
+            NSPasteboard.general.writeObjects([composite])
+        } catch { presentError(error); return }
         
         // Show feedback to user
         showCopyFeedback()
@@ -666,13 +645,8 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         // Push undo state before modifying
         pushUndoState()
         
-        // 1. Crop the image
-        let newSize = rect.size
-        let newImage = NSImage(size: newSize)
-        newImage.lockFocus()
-        baseImage.draw(in: NSRect(origin: .zero, size: newSize), from: rect, operation: .copy, fraction: 1.0)
-        newImage.unlockFocus()
-        
+        guard let newImage = try? CompositeRenderer.crop(baseImage, topOriginRect: rect) else { return }
+
         // 2. Update base image
         baseImage = newImage
         canvasView.image = baseImage
@@ -681,57 +655,206 @@ extension MarkupEditorController: MarkupCanvasDelegate {
         let offset = CGPoint(x: -rect.origin.x, y: -rect.origin.y)
         
         for element in markupElements {
+            element.move(by: offset)
             if let blurElement = element as? BlurElement {
                 blurElement.updateBaseImage(baseImage)
             }
-            element.move(by: offset)
         }
         
         // 4. Reset crop selection
         canvasView.cropSelectionRect = nil
         canvasView.needsDisplay = true
         
-        // 5. Resize window content
-        if let window = self.window {
-            let windowWidth = max(newSize.width, Self.minimumWindowWidth)
-            let windowSize = NSSize(width: windowWidth, height: newSize.height)
-            window.setContentSize(windowSize)
-        }
+        updateCanvasSize()
     }
-    
+
     private func cancelCrop() {
         canvasView.cropSelectionRect = nil
         canvasView.needsDisplay = true
     }
     
-    private func createCompositeImage() -> NSImage {
-        let size = baseImage.size
-        let composite = NSImage(size: size)
-        
-        composite.lockFocus()
-        
-        // Draw base image first
-        baseImage.draw(in: NSRect(origin: .zero, size: size))
-        
-        // Get the current graphics context
-        guard let context = NSGraphicsContext.current?.cgContext else {
-            composite.unlockFocus()
-            return composite
-        }
-        
-        // Transform the coordinate system to match the flipped canvas view
-        // The canvas uses isFlipped = true (top-left origin), but NSImage uses bottom-left origin
-        context.translateBy(x: 0, y: size.height)
-        context.scaleBy(x: 1, y: -1)
-        
-        // Draw markup elements sorted by z-order (lower values draw first/behind)
-        let sortedElements = markupElements.sorted { $0.zOrder < $1.zOrder }
-        for element in sortedElements {
-            element.draw(in: context)
-        }
-        
-        composite.unlockFocus()
-        return composite
+    private func createCompositeImage() throws -> NSImage {
+        canvasView.endTextEditingIfActive()
+        return try CompositeRenderer.render(base: baseImage, elements: markupElements)
     }
 }
 
+// Standard actions participate in the responder chain; text fields keep their own editing actions.
+extension MarkupEditorController: NSMenuItemValidation, NSSharingServicePickerDelegate, NSSharingServiceDelegate {
+    @objc func copy(_ sender: Any?) { copyCompositeToClipboard() }
+    @objc func undo(_ sender: Any?) {
+        if let textView = canvasView.textView { textView.undoManager?.undo() }
+        else { performUndo() }
+    }
+    @objc func redo(_ sender: Any?) {
+        if let textView = canvasView.textView { textView.undoManager?.redo() }
+        else { performRedo() }
+    }
+    @objc func delete(_ sender: Any?) { deleteSelectedElement() }
+    @objc func chooseTool(_ sender: NSMenuItem) {
+        if let tool = MarkupTool(rawValue: sender.tag) { toolbarDidSelectTool(tool) }
+    }
+
+    @objc func chooseThickness(_ sender: NSMenuItem) {
+        MarkupLineThicknessManager.shared.currentThickness = CGFloat(sender.tag) / 10
+        titleBarToolbar.updateThickness(MarkupLineThicknessManager.shared.currentThickness)
+    }
+    @objc func chooseColor(_ sender: Any?) { titleBarToolbar.showColorPicker() }
+
+    @objc func saveScreenshot(_ sender: Any?) {
+        canvasView.endTextEditingIfActive()
+        guard let window else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.nameFieldStringValue = "Screenshot.png"
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let self, let url = panel.url else { return }
+            do { try CompositeRenderer.png(self.createCompositeImage()).write(to: url, options: .atomic) }
+            catch { self.presentError(error) }
+        }
+    }
+
+    @objc func printScreenshot(_ sender: Any?) {
+        do {
+            let view = NSImageView(frame: NSRect(origin: .zero, size: baseImage.size))
+            view.image = try createCompositeImage()
+            view.imageScaling = .scaleProportionallyUpOrDown
+            let info = NSPrintInfo.shared.copy() as! NSPrintInfo
+            info.horizontalPagination = .fit
+            info.verticalPagination = .fit
+            info.isHorizontallyCentered = true
+            info.isVerticallyCentered = true
+            let operation = NSPrintOperation(view: view, printInfo: info)
+            if let window { operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil) }
+        } catch { presentError(error) }
+    }
+
+    private func prepareSharedFile() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("VibeShot-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("Screenshot.png")
+        do { try CompositeRenderer.png(createCompositeImage()).write(to: file, options: .atomic) }
+        catch { try? FileManager.default.removeItem(at: directory); throw error }
+        sharedFile = file
+        return file
+    }
+
+    @objc func shareScreenshot(_ sender: Any?) {
+        guard sharedFile == nil else { return }
+        guard let anchor = window?.contentView else { return }
+        do {
+            let picker = NSSharingServicePicker(items: [try prepareSharedFile()])
+            sharingPicker = picker
+            picker.delegate = self
+            picker.show(relativeTo: NSRect(x: anchor.bounds.midX, y: anchor.bounds.midY, width: 1, height: 1),
+                        of: anchor, preferredEdge: .maxY)
+        } catch { presentError(error) }
+    }
+
+    @objc func airDropScreenshot(_ sender: Any?) {
+        guard sharedFile == nil else { return }
+        do {
+            let file = try prepareSharedFile()
+            guard let service = NSSharingService(named: .sendViaAirDrop), service.canPerform(withItems: [file]) else {
+                cleanupSharing()
+                let error = NSError(domain: "VibeShot", code: 1, userInfo: [NSLocalizedDescriptionKey: "AirDrop is unavailable on this Mac right now."])
+                presentError(error)
+                return
+            }
+            sharingService = service
+            service.delegate = self
+            service.perform(withItems: [file])
+        } catch { presentError(error) }
+    }
+
+    func sharingServicePicker(_ sharingServicePicker: NSSharingServicePicker, didChoose service: NSSharingService?) {
+        sharingService = service
+        service?.delegate = self
+        if service == nil { cleanupSharing() }
+    }
+    func sharingServicePicker(_ sharingServicePicker: NSSharingServicePicker, delegateFor sharingService: NSSharingService) -> (any NSSharingServiceDelegate)? { self }
+    func sharingService(_ sharingService: NSSharingService, didShareItems items: [Any]) { cleanupSharing() }
+    func sharingService(_ sharingService: NSSharingService, didFailToShareItems items: [Any], error: Error) {
+        cleanupSharing()
+        if (error as NSError).code != NSUserCancelledError { presentError(error) }
+    }
+    private func cleanupSharing() {
+        if let sharedFile { try? FileManager.default.removeItem(at: sharedFile.deletingLastPathComponent()) }
+        sharedFile = nil
+        sharingService = nil
+        sharingPicker = nil
+        if closedWhileSharing { onClose?() }
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(undo(_:)):
+            return canvasView.textView?.undoManager?.canUndo ?? !undoStack.isEmpty
+        case #selector(redo(_:)):
+            return canvasView.textView?.undoManager?.canRedo ?? !redoStack.isEmpty
+        case #selector(delete(_:)): return markupElements.contains { $0.isSelected }
+        case #selector(chooseThickness(_:)):
+            menuItem.state = CGFloat(menuItem.tag) / 10 == MarkupLineThicknessManager.shared.currentThickness ? .on : .off
+            return true
+        case #selector(chooseTool(_:)):
+            menuItem.state = menuItem.tag == currentTool.rawValue ? .on : .off
+            return true
+        case #selector(shareScreenshot(_:)), #selector(airDropScreenshot(_:)):
+            return sharedFile == nil
+        default: return true
+        }
+    }
+}
+
+extension MarkupEditorController: NSToolbarDelegate, NSToolbarItemValidation {
+    func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        item.itemIdentifier.rawValue != "share" || sharedFile == nil
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.init("markup"), .flexibleSpace, .init("copy"), .init("save"), .init("print"), .init("share")]
+    }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarDefaultItemIdentifiers(toolbar)
+    }
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        let item = NSToolbarItem(itemIdentifier: identifier)
+        if identifier.rawValue == "markup" {
+            item.label = "Markup Tools"
+            titleBarToolbar.frame = NSRect(origin: .zero, size: titleBarToolbar.intrinsicContentSize)
+            item.view = titleBarToolbar
+            let overflow = NSMenuItem(title: "Markup Tools", action: nil, keyEquivalent: "")
+            let menu = NSMenu(title: "Markup Tools")
+            EditorMenus.populateTools(menu, target: self)
+            overflow.submenu = menu
+            item.menuFormRepresentation = overflow
+            return item
+        }
+        let actions: [String: (String, String, Selector)] = [
+            "copy": ("Copy Screenshot", "doc.on.doc", #selector(copy(_:))),
+            "save": ("Save…", "square.and.arrow.down", #selector(saveScreenshot(_:))),
+            "print": ("Print…", "printer", #selector(printScreenshot(_:))),
+            "share": ("Share…", "square.and.arrow.up", #selector(shareScreenshot(_:)))
+        ]
+        guard let (label, symbol, action) = actions[identifier.rawValue] else { return nil }
+        item.label = label
+        item.toolTip = label
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        item.target = self
+        item.action = action
+        return item
+    }
+}
+
+/// Keep small screenshots centered without changing their drawing coordinates.
+private final class CenteredClipView: NSClipView {
+    override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+        var result = super.constrainBoundsRect(proposedBounds)
+        if let size = documentView?.frame.size {
+            if size.width < result.width { result.origin.x = (size.width - result.width) / 2 }
+            if size.height < result.height { result.origin.y = (size.height - result.height) / 2 }
+        }
+        return result
+    }
+}

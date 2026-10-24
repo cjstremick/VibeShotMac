@@ -188,21 +188,25 @@ final class MarkupLineThicknessManager {
 enum MarkupTool: Int, CaseIterable {
     case selection = 0
     case arrow = 1
+    case line = 7
     case rectangle = 2
     case stepCounter = 3
     case text = 4
     case blur = 5
     case crop = 6
+    case highlighter = 8
     
     var displayName: String {
         switch self {
         case .selection: return "Selection"
         case .arrow: return "Arrow"
+        case .line: return "Line"
         case .rectangle: return "Rectangle"
         case .stepCounter: return "Step Counter"
         case .text: return "Text"
         case .blur: return "Blur"
         case .crop: return "Crop"
+        case .highlighter: return "Highlighter"
         }
     }
     
@@ -210,11 +214,13 @@ enum MarkupTool: Int, CaseIterable {
         switch self {
         case .selection: return "cursorarrow"
         case .arrow: return "arrow.up.right"
+        case .line: return "line.diagonal"
         case .rectangle: return "rectangle"
         case .stepCounter: return "number.circle"
         case .text: return "textformat"
         case .blur: return "drop.fill"
         case .crop: return "crop"
+        case .highlighter: return "highlighter"
         }
     }
     
@@ -222,11 +228,13 @@ enum MarkupTool: Int, CaseIterable {
         switch self {
         case .selection: return "s"
         case .arrow: return "a"
+        case .line: return "l"
         case .rectangle: return "r"
         case .stepCounter: return "c"
         case .text: return "t"
         case .blur: return "b"
         case .crop: return "k"
+        case .highlighter: return "h"
         }
     }
     
@@ -236,16 +244,22 @@ enum MarkupTool: Int, CaseIterable {
 }
 
 // MARK: - Base Markup Element Protocol
+enum MarkupRenderMode { case editor, output }
+
 protocol MarkupElement: AnyObject, Identifiable {
     var id: UUID { get }
     var isSelected: Bool { get set }
     var bounds: CGRect { get }
     var zOrder: Int { get }  // Lower values draw first (behind)
     
-    func draw(in context: CGContext)
+    func draw(in context: CGContext, mode: MarkupRenderMode)
     func contains(point: CGPoint) -> Bool
     func duplicate() -> any MarkupElement
     func move(by translation: CGPoint)
+}
+
+extension MarkupElement {
+    func draw(in context: CGContext) { draw(in: context, mode: .editor) }
 }
 
 // MARK: - Resize Handle Types
@@ -307,8 +321,9 @@ extension ResizableElement {
     }
 }
 
-// MARK: - Arrow Element
-final class ArrowElement: MarkupElement, ResizableElement {
+// MARK: - Lines and Arrows
+class LineElement: MarkupElement, ResizableElement {
+    private let hasArrowhead: Bool
     let id = UUID()
     var isSelected: Bool = false
     let zOrder: Int = MarkupConstants.ZOrder.standard
@@ -326,29 +341,26 @@ final class ArrowElement: MarkupElement, ResizableElement {
         return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
     
-    // Arrow-specific: expose endpoints for resize handles
-    var arrowStartPoint: CGPoint { startPoint }
-    var arrowEndPoint: CGPoint { endPoint }
+    // Expose endpoints for line and arrow resize handles
+    var startPosition: CGPoint { startPoint }
+    var endPosition: CGPoint { endPoint }
     
-    init(startPoint: CGPoint, endPoint: CGPoint, color: NSColor = MarkupColorManager.shared.currentColor) {
+    init(startPoint: CGPoint, endPoint: CGPoint, color: NSColor = MarkupColorManager.shared.currentColor,
+         lineWidth: CGFloat? = nil, hasArrowhead: Bool = false) {
         self.startPoint = startPoint
         self.endPoint = endPoint
         self.color = color
-        self.lineWidth = MarkupLineThicknessManager.shared.currentThickness
+        self.lineWidth = lineWidth ?? MarkupLineThicknessManager.shared.currentThickness
+        self.hasArrowhead = hasArrowhead
     }
-    
-    // Private init for duplication to preserve exact properties
-    private init(startPoint: CGPoint, endPoint: CGPoint, color: NSColor, lineWidth: CGFloat) {
-        self.startPoint = startPoint
-        self.endPoint = endPoint
-        self.color = color
-        self.lineWidth = lineWidth
-    }
-    
+
     func duplicate() -> any MarkupElement {
-        return ArrowElement(startPoint: startPoint, endPoint: endPoint, color: color, lineWidth: lineWidth)
+        if hasArrowhead {
+            return ArrowElement(startPoint: startPoint, endPoint: endPoint, color: color, lineWidth: lineWidth)
+        }
+        return LineElement(startPoint: startPoint, endPoint: endPoint, color: color, lineWidth: lineWidth)
     }
-    
+
     func resize(handle: ResizeHandle, to point: CGPoint) {
         // For arrows: bottomLeft = start, topRight = end
         switch handle {
@@ -364,8 +376,8 @@ final class ArrowElement: MarkupElement, ResizableElement {
         // so this is intentionally empty to avoid double-drawing
     }
     
-    // Arrow-specific hit test for resize handles
-    func hitTestArrowHandle(point: CGPoint) -> Bool? {
+    // Endpoint hit testing shared by lines and arrows
+    func hitTestEndpoint(point: CGPoint) -> Bool? {
         let handleSize = ResizeHandle.handleSize
         let startRect = CGRect(x: startPoint.x - handleSize/2, y: startPoint.y - handleSize/2, width: handleSize, height: handleSize)
         let endRect = CGRect(x: endPoint.x - handleSize/2, y: endPoint.y - handleSize/2, width: handleSize, height: handleSize)
@@ -383,15 +395,23 @@ final class ArrowElement: MarkupElement, ResizableElement {
         endPoint = point
     }
     
-    func draw(in context: CGContext) {
+    func draw(in context: CGContext, mode: MarkupRenderMode = .editor) {
         context.saveGState()
         
-        // Use shared arrow drawing helper
-        let geometry = ArrowDrawing.calculateGeometry(from: startPoint, to: endPoint, lineWidth: lineWidth)
-        ArrowDrawing.draw(geometry: geometry, color: color.cgColor, lineWidth: lineWidth, in: context)
+        if hasArrowhead {
+            let geometry = ArrowDrawing.calculateGeometry(from: startPoint, to: endPoint, lineWidth: lineWidth)
+            ArrowDrawing.draw(geometry: geometry, color: color.cgColor, lineWidth: lineWidth, in: context)
+        } else {
+            context.setStrokeColor(color.cgColor)
+            context.setLineWidth(lineWidth)
+            context.setLineCap(.round)
+            context.move(to: startPoint)
+            context.addLine(to: endPoint)
+            context.strokePath()
+        }
         
         // Draw selection indicator if selected
-        if isSelected {
+        if isSelected && mode == .editor {
             drawSelectionIndicator(in: context)
         }
         
@@ -464,6 +484,14 @@ final class ArrowElement: MarkupElement, ResizableElement {
     }
 }
 
+final class ArrowElement: LineElement {
+    init(startPoint: CGPoint, endPoint: CGPoint, color: NSColor = MarkupColorManager.shared.currentColor,
+         lineWidth: CGFloat? = nil) {
+        super.init(startPoint: startPoint, endPoint: endPoint, color: color,
+                   lineWidth: lineWidth, hasArrowhead: true)
+    }
+}
+
 // MARK: - Rectangle Element
 final class RectangleElement: MarkupElement, ResizableElement {
     let id = UUID()
@@ -531,7 +559,7 @@ final class RectangleElement: MarkupElement, ResizableElement {
         }
     }
     
-    func draw(in context: CGContext) {
+    func draw(in context: CGContext, mode: MarkupRenderMode = .editor) {
         context.saveGState()
         
         let rect = CGRect(
@@ -553,7 +581,7 @@ final class RectangleElement: MarkupElement, ResizableElement {
         context.strokePath()
         
         // Draw selection indicator if selected
-        if isSelected {
+        if isSelected && mode == .editor {
             drawSelectionIndicator(in: context)
         }
         
@@ -615,7 +643,7 @@ final class StepCounterElement: MarkupElement {
         return StepCounterElement(centerPoint: centerPoint, stepNumber: stepNumber, color: backgroundColor)
     }
     
-    func draw(in context: CGContext) {
+    func draw(in context: CGContext, mode: MarkupRenderMode = .editor) {
         context.saveGState()
         
         // Draw circle background
@@ -641,31 +669,10 @@ final class StepCounterElement: MarkupElement {
             height: textSize.height
         )
         
-        // Check if the context is transformed (flipped for copy operation)
-        let currentTransform = context.ctm
-        let isFlipped = currentTransform.d < 0 // Check if Y is flipped
-        
-        if isFlipped {
-            // We're in a flipped context (copy operation), need to flip text back
-            context.saveGState()
-            context.translateBy(x: 0, y: textRect.origin.y + textRect.height)
-            context.scaleBy(x: 1, y: -1)
-            
-            let adjustedRect = CGRect(
-                x: textRect.origin.x,
-                y: 0,
-                width: textRect.width,
-                height: textRect.height
-            )
-            attributedString.draw(in: adjustedRect)
-            context.restoreGState()
-        } else {
-            // Normal drawing (editor view)
-            attributedString.draw(in: textRect)
-        }
-        
+        attributedString.draw(in: textRect)
+
         // Draw selection indicator if selected
-        if isSelected {
+        if isSelected && mode == .editor {
             drawSelectionIndicator(in: context)
         }
         
@@ -694,119 +701,53 @@ final class StepCounterElement: MarkupElement {
 // MARK: - Text Element
 final class TextElement: MarkupElement {
     let id = UUID()
-    var isSelected: Bool = false
-    let zOrder: Int = MarkupConstants.ZOrder.standard
-    var isBeingEdited: Bool = false  // Add this property to hide element while editing
-    
+    var isSelected = false
+    let zOrder = MarkupConstants.ZOrder.standard
+    var isBeingEdited = false
+
     private var position: CGPoint
-    var text: String {
-        didSet {
-            updateBounds()
-        }
-    }
-    private let font: NSFont
-    private var _bounds: CGRect
-    private let textColor: NSColor
-    
-    var bounds: CGRect {
-        return _bounds
-    }
-    
-    init(position: CGPoint, text: String = "", color: NSColor = MarkupColorManager.shared.currentColor) {
+    let layoutWidth: CGFloat?
+    let textColor: NSColor
+    var text: String { didSet { layout = makeLayout(text: text) } }
+    private var layout: AnnotationTextLayout!
+
+    var bounds: CGRect { CGRect(origin: position, size: layout.size) }
+
+    init(position: CGPoint, text: String = "", color: NSColor = MarkupColorManager.shared.currentColor,
+         layoutWidth: CGFloat? = nil) {
         self.position = position
         self.text = text
-        self.font = NSFont.systemFont(ofSize: MarkupConstants.Text.fontSize, weight: .medium)
         self.textColor = color
-        self._bounds = CGRect.zero
-        updateBounds()
+        self.layoutWidth = layoutWidth
+        self.layout = makeLayout(text: text)
     }
-    
+
+    func makeLayout(text: String) -> AnnotationTextLayout {
+        AnnotationTextLayout(text: text, color: textColor, width: layoutWidth)
+    }
+
     func duplicate() -> any MarkupElement {
-        return TextElement(position: position, text: text, color: textColor)
+        TextElement(position: position, text: text, color: textColor, layoutWidth: layoutWidth)
     }
-    
-    private func updateBounds() {
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: textColor
-        ]
-        
-        let attributedString = NSAttributedString(string: text.isEmpty ? "Type here..." : text, attributes: attributes)
-        let textSize = attributedString.size()
-        
-        _bounds = CGRect(
-            x: position.x,
-            y: position.y,
-            width: max(textSize.width, MarkupConstants.Text.minimumWidth),
-            height: textSize.height
-        )
-    }
-    
-    func draw(in context: CGContext) {
-        // Don't draw if currently being edited to avoid double rendering
+
+    func draw(in context: CGContext, mode: MarkupRenderMode = .editor) {
         guard !isBeingEdited else { return }
-        
         context.saveGState()
-        
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: textColor
-        ]
-        
-        let displayText = text
-        let attributedString = NSAttributedString(string: displayText, attributes: attributes)
-        
-        // Check if the context is transformed (flipped for copy operation)
-        let currentTransform = context.ctm
-        let isFlipped = currentTransform.d < 0 // Check if Y is flipped
-        
-        if isFlipped {
-            // We're in a flipped context (copy operation), need to flip text back
-            context.saveGState()
-            context.translateBy(x: 0, y: bounds.origin.y + bounds.height)
-            context.scaleBy(x: 1, y: -1)
-            
-            let adjustedBounds = CGRect(
-                x: bounds.origin.x,
-                y: 0,
-                width: bounds.width,
-                height: bounds.height
-            )
-            attributedString.draw(in: adjustedBounds)
-            context.restoreGState()
-        } else {
-            // Normal drawing (editor view)
-            attributedString.draw(in: bounds)
+        defer { context.restoreGState() }
+        layout.draw(at: position)
+        if isSelected && mode == .editor {
+            context.setStrokeColor(MarkupConstants.Selection.color.cgColor)
+            context.setLineWidth(MarkupConstants.Selection.lineWidth)
+            context.setLineDash(phase: 0, lengths: MarkupConstants.Selection.dashPattern)
+            context.stroke(bounds.insetBy(dx: MarkupConstants.Selection.inset, dy: MarkupConstants.Selection.inset))
         }
-        
-        // Draw selection indicator if selected
-        if isSelected && !isBeingEdited {
-            drawSelectionIndicator(in: context)
-        }
-        
-        context.restoreGState()
     }
-    
-    func contains(point: CGPoint) -> Bool {
-        return bounds.insetBy(dx: -5, dy: -5).contains(point)
-    }
-    
-    func updateText(_ newText: String) {
-        text = newText
-    }
-    
-    private func drawSelectionIndicator(in context: CGContext) {
-        context.setStrokeColor(MarkupConstants.Selection.color.cgColor)
-        context.setLineWidth(MarkupConstants.Selection.lineWidth)
-        context.setLineDash(phase: 0, lengths: MarkupConstants.Selection.dashPattern)
-        context.stroke(bounds.insetBy(dx: MarkupConstants.Selection.inset, dy: MarkupConstants.Selection.inset))
-    }
-    
+
+    func contains(point: CGPoint) -> Bool { bounds.insetBy(dx: -5, dy: -5).contains(point) }
+    func updateText(_ newText: String) { text = newText }
     func move(by translation: CGPoint) {
         position.x += translation.x
         position.y += translation.y
-        _bounds.origin.x += translation.x
-        _bounds.origin.y += translation.y
     }
 }
 
@@ -845,13 +786,7 @@ final class BlurElement: MarkupElement, ResizableElement {
     let zOrder: Int = MarkupConstants.ZOrder.blur
     
     private var rect: CGRect
-    /// Weak reference would be ideal but NSImage isn't a class that works with weak.
-    /// Instead, we store only what we need and regenerate on demand.
-    private weak var _baseImageRef: AnyObject?
-    private var baseImage: NSImage? {
-        get { _baseImageRef as? NSImage }
-        set { _baseImageRef = newValue }
-    }
+    private var baseImage: NSImage?
     private var cachedBlurredImage: NSImage?
     private var cachedRect: CGRect = .zero  // For throttling blur regeneration
     
@@ -859,16 +794,21 @@ final class BlurElement: MarkupElement, ResizableElement {
     
     init(rect: CGRect, baseImage: NSImage) {
         self.rect = rect
-        self._baseImageRef = baseImage
+        self.baseImage = baseImage
         updateBlurredImage(force: true)
     }
     
-    func duplicate() -> any MarkupElement {
-        // Create a new blur element - it will need its base image set
-        let newElement = BlurElement(rect: rect, baseImage: baseImage ?? NSImage())
-        return newElement
+    private init(rect: CGRect, baseImage: NSImage?, cachedImage: NSImage?, cachedRect: CGRect) {
+        self.rect = rect
+        self.baseImage = baseImage
+        self.cachedBlurredImage = cachedImage
+        self.cachedRect = cachedRect
     }
-    
+
+    func duplicate() -> any MarkupElement {
+        BlurElement(rect: rect, baseImage: baseImage, cachedImage: cachedBlurredImage, cachedRect: cachedRect)
+    }
+
     func move(by translation: CGPoint) {
         rect.origin.x += translation.x
         rect.origin.y += translation.y
@@ -907,7 +847,7 @@ final class BlurElement: MarkupElement, ResizableElement {
     }
     
     func updateBaseImage(_ newBaseImage: NSImage) {
-        self._baseImageRef = newBaseImage
+        self.baseImage = newBaseImage
         updateBlurredImage(force: true)
     }
     
@@ -935,46 +875,24 @@ final class BlurElement: MarkupElement, ResizableElement {
         updateBlurredImage(force: true)
     }
     
+    private static let ciContext = CIContext(options: nil)
+
     static func createBlurredImage(from image: NSImage, rect: CGRect) -> NSImage? {
-        // The rect is in flipped coordinates (Y=0 at top, used by the canvas)
-        // NSImage.draw(from:) uses unflipped coordinates (Y=0 at bottom)
-        // Convert the rect to unflipped coordinates for extraction
-        let sourceRect = CGRect(
-            x: rect.origin.x,
-            y: image.size.height - rect.origin.y - rect.height,
-            width: rect.width,
-            height: rect.height
-        )
-        
-        // Step 1: Extract the region from the source image (unflipped context)
-        let extractedImage = NSImage(size: rect.size)
-        extractedImage.lockFocus()
-        image.draw(in: NSRect(origin: .zero, size: rect.size), from: sourceRect, operation: .copy, fraction: 1.0)
-        extractedImage.unlockFocus()
-        
-        // Step 2: Apply blur to the extracted image
-        guard let tiffData = extractedImage.tiffRepresentation,
-              let bitmapRep = NSBitmapImageRep(data: tiffData),
-              let ciImage = CIImage(bitmapImageRep: bitmapRep) else { return nil }
-        
-        let filter = CIFilter(name: "CIGaussianBlur")
-        filter?.setValue(ciImage, forKey: kCIInputImageKey)
-        filter?.setValue(MarkupConstants.Blur.radius, forKey: kCIInputRadiusKey)
-        
-        guard let blurredOutput = filter?.outputImage else { return nil }
-        
-        // Crop back to original size (blur expands the image)
-        let croppedOutput = blurredOutput.cropped(to: ciImage.extent)
-        
-        // Create the final image
-        let ciContext = CIContext(options: nil)
-        guard let cgImage = ciContext.createCGImage(croppedOutput, from: croppedOutput.extent) else { return nil }
-        
-        let finalImage = NSImage(cgImage: cgImage, size: rect.size)
-        return finalImage
+        guard let source = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let scaleX = CGFloat(source.width) / image.size.width
+        let scaleY = CGFloat(source.height) / image.size.height
+        let region = CGRect(x: rect.minX * scaleX,
+                            y: (image.size.height - rect.maxY) * scaleY,
+                            width: rect.width * scaleX, height: rect.height * scaleY)
+        let input = CIImage(cgImage: source)
+        let blurred = input.clampedToExtent().applyingFilter("CIGaussianBlur", parameters: [
+            kCIInputRadiusKey: MarkupConstants.Blur.radius * scaleX
+        ]).cropped(to: region)
+        guard let output = ciContext.createCGImage(blurred, from: region) else { return nil }
+        return NSImage(cgImage: output, size: rect.size)
     }
-    
-    func draw(in context: CGContext) {
+
+    func draw(in context: CGContext, mode: MarkupRenderMode = .editor) {
         context.saveGState()
         
         if let blurredImage = cachedBlurredImage {
@@ -989,7 +907,7 @@ final class BlurElement: MarkupElement, ResizableElement {
         }
         
         // Draw selection indicator if selected
-        if isSelected {
+        if isSelected && mode == .editor {
             drawSelectionIndicator(in: context)
         }
         
