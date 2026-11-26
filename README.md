@@ -1,8 +1,12 @@
 # VibeShotMac
 
-A small, free, native macOS screenshot and markup utility. Everything runs locally. No account, server, subscription or third-party packages are required.
+A small, free, native macOS screenshot, screen-recording and markup utility. Everything runs locally. No account, server, subscription or third-party packages are required.
 
 Capture a region with **Control–Option–Shift–S** or the menu-bar target icon. Annotate it with arrows, plain lines, text, numbered steps, highlights or blur; crop, undo and redo. Copy the result, save a PNG, print it, or use the system Share/AirDrop interface.
+
+Record a region with **Control–Option–Shift–R** or the **Record Region** menu item. During the countdown and while recording, a red border and subtle dim mark the captured area; the **Stop** button appears just outside it once capture starts (the menu-bar icon also turns red and offers Stop Recording). Press Stop, then choose where to save the H.264 `.mp4`. The border and Stop control are excluded from the recording itself. Recording is video-only in this version; audio and animated GIF export are planned follow-ups.
+
+Open **Settings (⌘,)** to choose what happens when a recording finishes — ask where to save, save to a chosen folder, or copy the video to the clipboard — add a 3/5/10-second countdown centered in the selected region, and optionally include the pointer with click ripples and scroll arrows in the recording.
 
 The app stays in the menu bar while idle. An editor brings up the Dock icon and normal File/Edit/Tools menus. Multiple captures can remain open. The editor supports scrolling and trackpad pinch zoom; smaller windows use the toolbar's overflow menu.
 
@@ -27,6 +31,7 @@ For prerequisites, stable installation, Xcode, permissions and troubleshooting, 
 
 | Action | Shortcut |
 |---|---|
+| Record region (while idle) | ⌃⌥⇧R |
 | Copy screenshot (text selection while editing text) | ⌘C |
 | Save PNG / Print / Close | ⌘S / ⌘P / ⌘W |
 | Undo / Redo | ⌘Z / ⇧⌘Z |
@@ -42,7 +47,7 @@ Tool letters apply while the canvas has focus, not while typing. Escape restores
 
 ## Development and releases
 
-Swift + AppKit, with a minimal SwiftUI app entry point. ScreenCaptureKit handles capture; Core Graphics and Core Image handle pixel output and blur. No external packages.
+Swift + AppKit, with a minimal SwiftUI app entry point. ScreenCaptureKit handles still capture and screen recording; AVFoundation writes H.264 `.mp4`; Core Graphics and Core Image handle pixel output and blur. No external packages.
 
 - `VibeShot/VibeShot/`: app source and assets.
 - `Tests/RegressionTests.swift`: local rendering and editor regression checks.

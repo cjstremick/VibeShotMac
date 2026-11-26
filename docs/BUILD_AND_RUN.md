@@ -52,6 +52,28 @@ After checking a new build:
 
 Ad-hoc code identity changes can cause macOS to ask for capture permission again. Keep the bundle identifier and installation path stable. If capture is denied, check System Settings → Privacy & Security → Screen Recording (or Screen & System Audio Recording). Do not reset the whole privacy database or disable Gatekeeper to troubleshoot one app.
 
+## Stable signing (stop repeated Screen Recording prompts)
+
+Ad-hoc signing (`--sign -`) gives every rebuilt binary a different code identity. macOS keys Screen Recording approval to that identity, so each new build can look like a brand-new app and force the remove/re-add/restart dance again.
+
+Sign local builds with **one stable identity** instead. Create a self-signed code-signing identity once:
+
+```sh
+./scripts/make-signing-identity.sh
+```
+
+That creates a `VibeShot Dev` identity in the login keychain (using the system OpenSSL, because a newer Homebrew OpenSSL writes a PKCS#12 that macOS rejects). Then rebuild normally:
+
+```sh
+./scripts/build.sh
+```
+
+`build.sh` and `package.sh` pick up `VibeShot Dev` automatically; set `CODE_SIGN_IDENTITY` to use a different identity. Trusting the certificate in Keychain Access is optional for local use — codesign can sign with it while it still shows as "not trusted".
+
+Alternatively, create it in **Keychain Access → Certificate Assistant → Create a Certificate…** with Name `VibeShot Dev`, Identity Type **Self Signed Root**, Certificate Type **Code Signing**.
+
+The first build after switching identity needs one more Screen Recording approval. After that, rebuilds reuse the same identity and keep the permission. Keep the bundle identifier (`com.stremick.VibeShot`) and install path stable too. Release packaging still defaults to ad-hoc unless `CODE_SIGN_IDENTITY` is set.
+
 Save uses a standard file chooser with sandbox user-selected read/write access. Print uses the native print dialog and sandbox printing entitlement. Share/AirDrop uses a temporary PNG retained until completion/cancellation. No screenshot is uploaded automatically. Temporary share folders older than a day are removed at a later launch.
 
 ## Optional Xcode workflow

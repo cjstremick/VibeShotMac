@@ -36,6 +36,7 @@ protocol MarkupCanvasDelegate: AnyObject {
     func canvasDidUpdateElements(_ elements: [any MarkupElement])
     func canvasDidSelectElement(_ element: any MarkupElement)
     func canvasWillResize()  // Called before a resize operation starts
+    func canvasWillCommitTextChange()  // Called before a text edit changes the document
     func canvasDidRequestToolChange(_ tool: MarkupTool)  // Request tool switch (e.g., click-to-select)
     var selectedElement: (any MarkupElement)? { get }
 }
@@ -65,6 +66,10 @@ final class MarkupCanvasView: NSView {
     private var isDrawing = false
     var highlightColor: NSColor = .systemYellow
     private var currentTool: MarkupTool = .arrow
+
+    // Reuse the previous drag frame's blur so dragging does not re-run
+    // CIGaussianBlur at the display refresh rate. Cleared when a new drag starts.
+    private var blurPreviewCache: (rect: CGRect, image: NSImage)?
     
     // Selection-specific properties
     private var selectionRect: CGRect?
@@ -98,6 +103,7 @@ final class MarkupCanvasView: NSView {
     
     func setCurrentTool(_ tool: MarkupTool) {
         currentTool = tool
+        blurPreviewCache = nil
         needsDisplay = true
     }
     
@@ -392,15 +398,34 @@ final class MarkupCanvasView: NSView {
         guard rect.width > 5 && rect.height > 5 else { return }
         
         context.saveGState()
-        
-        // Create a live blur preview using the base image
-        if let blurredImage = BlurElement.createBlurredImage(from: image, rect: rect) {
+
+        // Only re-run the Gaussian blur when the drag moves or resizes noticeably.
+        // Between those steps the previous frame's blur is reused, which keeps
+        // dragging smooth instead of blurring again on every mouse-move event.
+        let threshold: CGFloat = 8
+        let canReuse = blurPreviewCache.map { cached in
+            abs(cached.rect.width - rect.width) <= threshold &&
+            abs(cached.rect.height - rect.height) <= threshold &&
+            hypot(cached.rect.midX - rect.midX, cached.rect.midY - rect.midY) <= threshold
+        } ?? false
+
+        let blurredImage: NSImage?
+        if canReuse, let cached = blurPreviewCache {
+            blurredImage = cached.image
+        } else if let generated = BlurElement.createBlurredImage(from: image, rect: rect) {
+            blurPreviewCache = (rect, generated)
+            blurredImage = generated
+        } else {
+            blurredImage = nil
+        }
+
+        if let blurredImage {
             NSGraphicsContext.saveGraphicsState()
             let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
             NSGraphicsContext.current = nsContext
-            
+
             blurredImage.draw(in: rect)
-            
+
             NSGraphicsContext.restoreGraphicsState()
         }
         
@@ -431,25 +456,22 @@ final class MarkupCanvasView: NSView {
         // Draw all selected elements at the new position
         for element in selectedElements {
             if let blurElement = element as? BlurElement {
-                // For blur elements, we need to generate a new blur at the translated position
                 let originalBounds = blurElement.bounds
-                let newRect = CGRect(
-                    x: originalBounds.origin.x + deltaX,
-                    y: originalBounds.origin.y + deltaY,
-                    width: originalBounds.width,
-                    height: originalBounds.height
-                )
-                
-                // Create blur preview at the new position
-                if let blurredImage = BlurElement.createBlurredImage(from: image, rect: newRect) {
+                let newRect = originalBounds.offsetBy(dx: deltaX, dy: deltaY)
+
+                // Reuse the element's cached blur while dragging; the controller
+                // calls finalizeBlur() on mouse-up to regenerate the exact pixels.
+                let blurredImage = blurElement.previewImage
+                    ?? BlurElement.createBlurredImage(from: image, rect: newRect)
+                if let blurredImage {
                     NSGraphicsContext.saveGraphicsState()
                     let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
                     NSGraphicsContext.current = nsContext
-                    
+
                     blurredImage.draw(in: newRect)
-                    
+
                     NSGraphicsContext.restoreGraphicsState()
-                    
+
                     // Draw selection indicator
                     if blurElement.isSelected {
                         context.setStrokeColor(NSColor.selectedControlColor.cgColor)
@@ -481,6 +503,7 @@ final class MarkupCanvasView: NSView {
         isResizing = false
         activeResizeHandle = nil
         resizingElement = nil
+        blurPreviewCache = nil
         
         // Check if we're clicking on a resize handle (only when exactly one element is selected)
         if currentTool == .selection {
@@ -705,10 +728,10 @@ final class MarkupCanvasView: NSView {
             }
         }
         
-        // Create new text element
+        // Create a new text element. It joins markupElements only when committed,
+        // so cancelling never leaves an empty placeholder in undo history.
         let textElement = TextElement(position: point, text: "", color: MarkupColorManager.shared.currentColor,
                                       layoutWidth: max(1, image.size.width - point.x))
-        markupElements.append(textElement)
         needsDisplay = true
         
         originalText = nil
@@ -787,19 +810,36 @@ final class MarkupCanvasView: NSView {
               let textElement = currentTextElement else { return }
         
         if shouldCancel {
-            if isNewTextElement {
-                markupElements.removeAll { $0.id == textElement.id }
-            } else {
+            if !isNewTextElement {
                 textElement.updateText(originalText ?? textElement.text)
             }
+            // A new, uncommitted element was never added to markupElements.
         } else {
             // Normal completion - update the text element with the final text
             let finalText = textView.string
-            
-            if finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                // Remove empty text elements
-                markupElements.removeAll { $0.id == textElement.id }
+            let isBlank = finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+            let isChanging: Bool
+            if isNewTextElement {
+                isChanging = !isBlank
             } else {
+                isChanging = isBlank || finalText != (originalText ?? textElement.text)
+            }
+
+            // Snapshot the document before it changes. Doing this here keeps text
+            // edits undoable without leaving an empty snapshot when a new
+            // annotation is cancelled with Escape.
+            if isChanging { delegate?.canvasWillCommitTextChange() }
+
+            if isBlank {
+                // Remove empty text elements that were previously committed.
+                if !isNewTextElement {
+                    markupElements.removeAll { $0.id == textElement.id }
+                }
+            } else {
+                if isNewTextElement {
+                    markupElements.append(textElement)
+                }
                 textElement.updateText(finalText)
                 textElement.isBeingEdited = false  // Show the element again
             }

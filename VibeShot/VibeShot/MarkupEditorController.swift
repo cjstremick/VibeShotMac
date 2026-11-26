@@ -31,8 +31,15 @@ final class MarkupEditorController: NSWindowController, NSWindowDelegate {
     private var canvasView: MarkupCanvasView!
     private var titleBarToolbar: TitleBarToolbarView!
     
-    // The native toolbar provides overflow when the editor is narrow.
-    private static let minimumWindowWidth: CGFloat = 420
+    // Width reserved for the native Copy/Save/Print/Share toolbar items and their
+    // margins. Counting them here keeps the markup tools visible for small captures
+    // instead of collapsing them into the toolbar's overflow menu.
+    private static let outputButtonsWidth: CGFloat = 4 * 44 + 32
+
+    /// Smallest editor width that shows every markup tool and export button.
+    private static var minimumWindowWidth: CGFloat {
+        MarkupToolbarMetrics.width + outputButtonsWidth
+    }
     
     init(baseImage: NSImage) {
         self.baseImage = baseImage
@@ -75,7 +82,10 @@ final class MarkupEditorController: NSWindowController, NSWindowDelegate {
         window.title = "VibeShot Editor"
         window.isReleasedWhenClosed = false
         window.delegate = self
-        window.minSize = NSSize(width: Self.minimumWindowWidth, height: 180)
+        // Never force a window wider than the visible screen; on a narrow display
+        // the native toolbar can still fall back to overflow.
+        let availableWidth = (window.screen ?? NSScreen.main)?.visibleFrame.width ?? 1200
+        window.minSize = NSSize(width: min(Self.minimumWindowWidth, availableWidth), height: 220)
         fitWindowToImage()
         window.center()
         
@@ -147,7 +157,7 @@ final class MarkupEditorController: NSWindowController, NSWindowDelegate {
         guard let window else { return }
         let visible = (window.screen ?? NSScreen.main)?.visibleFrame.size ?? NSSize(width: 1200, height: 800)
         window.setContentSize(NSSize(width: min(max(baseImage.size.width, Self.minimumWindowWidth), visible.width - 40),
-                                     height: min(max(baseImage.size.height, 180), visible.height - 100)))
+                                     height: min(max(baseImage.size.height, 220), visible.height - 100)))
     }
 
     private func setupLayout() {
@@ -265,6 +275,10 @@ extension MarkupEditorController: MarkupCanvasDelegate {
     
     func canvasWillResize() {
         pushUndoState()  // Save state before resize operation
+    }
+
+    func canvasWillCommitTextChange() {
+        pushUndoState()  // Save the pre-edit document before committing text
     }
     
     func canvasDidFinishDrawing(from startPoint: CGPoint, to endPoint: CGPoint) {
@@ -532,8 +546,8 @@ extension MarkupEditorController: MarkupCanvasDelegate {
             y: max(0, min(point.y, imageRect.maxY))
         )
         
-        pushUndoState() // Save state before adding/editing text
-        // Start text editing at the clamped location
+        // Undo is pushed by canvasWillCommitTextChange only when the text
+        // actually changes, so cancelling a new annotation leaves no snapshot.
         canvasView.startTextEditing(at: clampedPoint)
         // Note: Synchronization will happen after text editing is complete
     }
@@ -641,11 +655,13 @@ extension MarkupEditorController: MarkupCanvasDelegate {
     private func applyCrop(rect: CGRect) {
         // Ensure crop rect is valid and has size
         guard rect.width > 0 && rect.height > 0 else { return }
-        
+
+        // Validate the crop before snapshotting so a failed crop leaves no
+        // empty undo step.
+        guard let newImage = try? CompositeRenderer.crop(baseImage, topOriginRect: rect) else { return }
+
         // Push undo state before modifying
         pushUndoState()
-        
-        guard let newImage = try? CompositeRenderer.crop(baseImage, topOriginRect: rect) else { return }
 
         // 2. Update base image
         baseImage = newImage

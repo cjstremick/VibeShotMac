@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 
 /// Render the actual live field's layout without its caret or selection highlight.
 private final class LiveTextPreview: MarkupElement {
@@ -43,6 +44,43 @@ struct RegressionTests {
         return NSImage(cgImage: context.makeImage()!, size: NSSize(width: 120, height: 100))
     }
     static func pixels(_ image: NSImage) throws -> Data { try CompositeRenderer.png(image) }
+
+    static func videoSampleBuffer(width: Int, height: Int, at time: CMTime) -> CMSampleBuffer? {
+        var pixelBuffer: CVPixelBuffer?
+        let attributes: [String: Any] = [
+            kCVPixelBufferCGImageCompatibilityKey as String: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true
+        ]
+        guard CVPixelBufferCreate(kCFAllocatorDefault, width, height,
+                                  kCVPixelFormatType_32BGRA, attributes as CFDictionary,
+                                  &pixelBuffer) == kCVReturnSuccess,
+              let pixelBuffer else { return nil }
+
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        if let base = CVPixelBufferGetBaseAddress(pixelBuffer) {
+            memset(base, 0x80, CVPixelBufferGetDataSize(pixelBuffer))
+        }
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+
+        var format: CMFormatDescription?
+        guard CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault,
+                                                           imageBuffer: pixelBuffer,
+                                                           formatDescriptionOut: &format) == noErr,
+              let format else { return nil }
+
+        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 30),
+                                        presentationTimeStamp: time,
+                                        decodeTimeStamp: .invalid)
+        var sampleBuffer: CMSampleBuffer?
+        guard CMSampleBufferCreateReadyWithImageBuffer(allocator: kCFAllocatorDefault,
+                                                       imageBuffer: pixelBuffer,
+                                                       formatDescription: format,
+                                                       sampleTiming: &timing,
+                                                       sampleBufferOut: &sampleBuffer) == noErr else {
+            return nil
+        }
+        return sampleBuffer
+    }
 
     @MainActor static func main() throws {
         _ = NSApplication.shared
@@ -183,6 +221,10 @@ struct RegressionTests {
         let window = editor.window!
         require(window.toolbar?.items.contains { $0.itemIdentifier.rawValue == "save" } == true, "Save toolbar item missing")
         require(window.styleMask.contains(.resizable), "Editor cannot resize")
+        require(window.minSize.width >= MarkupToolbarMetrics.width,
+                "Editor can be narrower than its toolbar: \(window.minSize.width) < \(MarkupToolbarMetrics.width)")
+        require((window.contentView?.bounds.width ?? 0) >= MarkupToolbarMetrics.width,
+                "Small capture window does not fit the markup toolbar")
         let markupItem = window.toolbar!.items.first { $0.itemIdentifier.rawValue == "markup" }!
         require(markupItem.menuFormRepresentation?.submenu?.items.count == MarkupTool.allCases.count + 3,
                 "Narrow windows lost access to markup and style commands")
@@ -216,6 +258,121 @@ struct RegressionTests {
         require(drawingCanvas.markupElements.count == 1, "Undo did not remove highlighter")
         editor.redo(nil)
         require(drawingCanvas.markupElements.last is HighlighterElement, "Redo lost highlighter")
+
+        // Cancelling a new text annotation must not consume an undo step.
+        let textUndoEditor = MarkupEditorController(baseImage: fixture(scale: 1))
+        let textUndoScroll = textUndoEditor.window!.contentView as! NSScrollView
+        let textUndoCanvas = textUndoScroll.documentView as! MarkupCanvasView
+        textUndoEditor.toolbarDidSelectTool(.line)
+        textUndoEditor.canvasDidFinishDrawing(from: CGPoint(x: 10, y: 10), to: CGPoint(x: 90, y: 40))
+        require(textUndoCanvas.markupElements.count == 1, "Line setup failed")
+        textUndoEditor.toolbarDidSelectTool(.text)
+        textUndoEditor.canvasDidStartDrawing(at: CGPoint(x: 20, y: 20))
+        textUndoCanvas.textViewDidReceiveEscape()
+        require(textUndoCanvas.textView == nil, "Text editor did not close")
+        textUndoEditor.undo(nil)
+        require(textUndoCanvas.markupElements.isEmpty, "Cancelling text left an empty undo step")
+
+        // Stopping an idle recorder must fail cleanly rather than start a writer.
+        var idleRecordingFailed = false
+        ScreenRecorder().stop { result in
+            if case .failure = result { idleRecordingFailed = true }
+        }
+        require(idleRecordingFailed, "Stopping an idle recorder did not report an error")
+
+        // Encoded dimensions stay even and within H.264-friendly limits.
+        let smallOutput = ScreenRecorder.outputPixelSize(for: CGSize(width: 101, height: 77), scale: 2)
+        require(smallOutput.width % 2 == 0 && smallOutput.height % 2 == 0,
+                "Recording dimensions must be even: \(smallOutput)")
+        let hugeOutput = ScreenRecorder.outputPixelSize(for: CGSize(width: 3008, height: 1692), scale: 2)
+        require(hugeOutput.width <= 3840 && hugeOutput.height <= 2160,
+                "Recording dimensions exceeded the 4K cap: \(hugeOutput)")
+        require(hugeOutput.width % 2 == 0 && hugeOutput.height % 2 == 0,
+                "Capped recording dimensions must be even: \(hugeOutput)")
+
+        // The H.264 writer configuration must produce a non-empty file from
+        // frames. This catches dimension/profile/bitrate mistakes without a
+        // real screen capture.
+        let videoURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VibeShotTest-\(UUID().uuidString).mp4")
+        let (videoWriter, videoInput) = try ScreenRecorder.makeWriter(url: videoURL,
+                                                                     pixelWidth: 320,
+                                                                     pixelHeight: 240)
+        var frameTime = CMTime.zero
+        for index in 0..<6 {
+            guard let sample = videoSampleBuffer(width: 320, height: 240, at: frameTime) else {
+                fatalError("Could not build a synthetic video frame")
+            }
+            let readyDeadline = Date().addingTimeInterval(5)
+            while !videoInput.isReadyForMoreMediaData && Date() < readyDeadline {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            }
+            if index == 0 { videoWriter.startSession(atSourceTime: frameTime) }
+            require(videoInput.append(sample),
+                    "Synthetic frame append failed: \(String(describing: videoWriter.error))")
+            frameTime = CMTimeAdd(frameTime, CMTime(value: 1, timescale: 30))
+        }
+        videoInput.markAsFinished()
+        videoWriter.finishWriting {}
+        let finishDeadline = Date().addingTimeInterval(10)
+        while videoWriter.status == .writing && Date() < finishDeadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        require(videoWriter.status == .completed,
+                "Synthetic writer did not complete: \(String(describing: videoWriter.error))")
+        let videoAttributes = try? FileManager.default.attributesOfItem(atPath: videoURL.path)
+        let videoSize = (videoAttributes?[.size] as? Int) ?? 0
+        require(videoSize > 0, "Synthetic recording file is empty")
+        try? FileManager.default.removeItem(at: videoURL)
+
+        // The on-screen Stop control stays just outside the recorded region.
+        let displayFrame = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let recordRegion = CGRect(x: 300, y: 300, width: 400, height: 240)
+        let stopFrame = RecordingHUDController.stopButtonFrame(
+            region: recordRegion, displayFrame: displayFrame,
+            size: RecordingHUDController.stopButtonSize, gap: 10)
+        require(!recordRegion.intersects(stopFrame), "Stop control overlaps the recording region")
+        require(displayFrame.contains(stopFrame), "Stop control left the display")
+
+        // A region flush with the bottom edge pushes the control above it.
+        let bottomRegion = CGRect(x: 200, y: 0, width: 300, height: 120)
+        let bottomStop = RecordingHUDController.stopButtonFrame(
+            region: bottomRegion, displayFrame: displayFrame,
+            size: RecordingHUDController.stopButtonSize, gap: 10)
+        require(!bottomRegion.intersects(bottomStop), "Stop control overlapped a bottom-edge region")
+        require(displayFrame.contains(bottomStop), "Stop control left the display at the bottom edge")
+
+        // Recording settings persist independently of the real defaults.
+        let suiteName = "VibeShotTests-\(UUID().uuidString)"
+        if let testDefaults = UserDefaults(suiteName: suiteName) {
+            testDefaults.removePersistentDomain(forName: suiteName)
+            let settings = RecordingSettings(defaults: testDefaults)
+            require(settings.destination == .ask, "Default recording destination changed")
+            settings.destination = .clipboard
+            require(settings.destination == .clipboard, "Recording destination did not persist")
+            settings.countdownSeconds = 5
+            require(settings.countdownSeconds == 5, "Countdown did not persist")
+            settings.countdownSeconds = 7
+            require(settings.countdownSeconds == 0, "Invalid countdown was not rejected")
+            require(settings.showPointerActivity == false, "Pointer activity should default to off")
+            settings.showPointerActivity = true
+            require(settings.showPointerActivity, "Pointer activity did not persist")
+            require(RecordingSettings.recordingFileName().hasSuffix(".mp4"),
+                    "Recording filename is missing its extension")
+            testDefaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let settingsWindow = SettingsWindowController()
+        require(settingsWindow.window?.title == "VibeShot Settings", "Settings window did not build")
+
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VibeShotTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let first = RecordingStorage.uniqueDestination(in: scratch, name: "Clip.mp4")
+        try Data().write(to: first)
+        let second = RecordingStorage.uniqueDestination(in: scratch, name: "Clip.mp4")
+        require(second.lastPathComponent == "Clip 2.mp4", "Unique destination did not avoid a collision")
         let preview = try CompositeRenderer.render(base: fixture(scale: 2), elements: [
             TextElement(position: CGPoint(x: 10, y: 5), text: "UP 123", color: .white),
             StepCounterElement(centerPoint: CGPoint(x: 60, y: 65), stepNumber: 2)

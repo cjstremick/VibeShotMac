@@ -789,8 +789,12 @@ final class BlurElement: MarkupElement, ResizableElement {
     private var baseImage: NSImage?
     private var cachedBlurredImage: NSImage?
     private var cachedRect: CGRect = .zero  // For throttling blur regeneration
-    
+
     var bounds: CGRect { rect }
+
+    /// Current cached blur pixels, reused by the canvas for cheap drag previews.
+    /// Call `finalizeBlur()` after a drag to refresh the exact pixels.
+    var previewImage: NSImage? { cachedBlurredImage }
     
     init(rect: CGRect, baseImage: NSImage) {
         self.rect = rect

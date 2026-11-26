@@ -1,5 +1,31 @@
 import Cocoa
 
+// MARK: - Toolbar Metrics
+
+/// Shared sizing for the custom markup toolbar. The editor window and the
+/// toolbar's intrinsic width read the same numbers so they cannot drift apart.
+enum MarkupToolbarMetrics {
+    static let toolButtonWidth: CGFloat = 40
+    static let thicknessButtonWidth: CGFloat = 40
+    static let colorButtonWidth: CGFloat = 32
+    static let separatorWidth: CGFloat = 1
+    static let spacing: CGFloat = 8
+    static let leadingInset: CGFloat = 12
+    static let trailingInset: CGFloat = 16
+    static let height: CGFloat = 32
+
+    /// Width of the markup area with every tool and accessory visible.
+    static var width: CGFloat {
+        let toolCount = CGFloat(MarkupTool.allCases.count)
+        let accessoryCount: CGFloat = 3  // separator, thickness, color
+        let itemCount = toolCount + accessoryCount
+        let content = toolCount * toolButtonWidth
+            + separatorWidth + thicknessButtonWidth + colorButtonWidth
+            + max(CGFloat(0), itemCount - 1) * spacing
+        return content + leadingInset + trailingInset
+    }
+}
+
 // MARK: - Toolbar View
 protocol MarkupToolbarDelegate: AnyObject {
     func toolbarDidSelectTool(_ tool: MarkupTool)
@@ -94,7 +120,7 @@ final class TitleBarToolbarView: NSView {
         
         let stackView = NSStackView()
         stackView.orientation = .horizontal
-        stackView.spacing = 8
+        stackView.spacing = MarkupToolbarMetrics.spacing
         stackView.alignment = .centerY
         stackView.distribution = .fillProportionally
         
@@ -112,7 +138,7 @@ final class TitleBarToolbarView: NSView {
         let separator = NSView()
         separator.wantsLayer = true
         separator.layer?.backgroundColor = NSColor.separatorColor.cgColor
-        separator.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        separator.widthAnchor.constraint(equalToConstant: MarkupToolbarMetrics.separatorWidth).isActive = true
         separator.heightAnchor.constraint(equalToConstant: 24).isActive = true
         stackView.addArrangedSubview(separator)
         
@@ -130,10 +156,10 @@ final class TitleBarToolbarView: NSView {
         addSubview(stackView)
         stackView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            stackView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            stackView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16), // Add trailing padding to avoid rounded corner
+            stackView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: MarkupToolbarMetrics.leadingInset),
+            stackView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -MarkupToolbarMetrics.trailingInset),
             stackView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            stackView.heightAnchor.constraint(equalToConstant: 32)
+            stackView.heightAnchor.constraint(equalToConstant: MarkupToolbarMetrics.height)
         ])
         
         // Select arrow tool by default instead of selection tool
@@ -144,10 +170,7 @@ final class TitleBarToolbarView: NSView {
     }
     
     override var intrinsicContentSize: NSSize {
-        let count = MarkupTool.allCases.count
-        let totalWidth = (count * 40) + 1 + 40 + 40 + ((count + 2) * 8) + 12 + 16
-        let size = NSSize(width: CGFloat(totalWidth), height: 32)
-        return size
+        NSSize(width: MarkupToolbarMetrics.width, height: MarkupToolbarMetrics.height)
     }
     
     private func updateToolbarBackground() {
@@ -201,8 +224,8 @@ final class TitleBarToolbarView: NSView {
         button.tag = MarkupTool.allCases.firstIndex(of: tool) ?? 0
         
         // Ensure button has proper sizing
-        button.widthAnchor.constraint(equalToConstant: 40).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        button.widthAnchor.constraint(equalToConstant: MarkupToolbarMetrics.toolButtonWidth).isActive = true
+        button.heightAnchor.constraint(equalToConstant: MarkupToolbarMetrics.height).isActive = true
         
         // Style the button better with clear visual states
         button.imagePosition = .imageOnly
@@ -258,8 +281,8 @@ final class TitleBarToolbarView: NSView {
         button.translatesAutoresizingMaskIntoConstraints = false
         
         // Set button size
-        button.widthAnchor.constraint(equalToConstant: 40).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        button.widthAnchor.constraint(equalToConstant: MarkupToolbarMetrics.thicknessButtonWidth).isActive = true
+        button.heightAnchor.constraint(equalToConstant: MarkupToolbarMetrics.height).isActive = true
         
         // Style the button according to macOS HIG for title bar accessories
         button.wantsLayer = true
@@ -299,7 +322,7 @@ final class TitleBarToolbarView: NSView {
         button.translatesAutoresizingMaskIntoConstraints = false
         
         // Set button size - make it smaller and more rectangular
-        button.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        button.widthAnchor.constraint(equalToConstant: MarkupToolbarMetrics.colorButtonWidth).isActive = true
         button.heightAnchor.constraint(equalToConstant: 24).isActive = true
         
         // Style the button according to macOS HIG for title bar accessories

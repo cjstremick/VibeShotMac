@@ -7,6 +7,8 @@
 - **WYSIWYG text:** fixed wrapping width at the screenshot edge, shared live/output layout, preserved explicit newlines, spaces and annotation color.
 - **Plain line (L):** existing color/thickness controls, endpoint handles, selection, move, undo/redo and all export destinations.
 - **Highlighter (H):** translucent yellow by default, with its own color selection. Drag a rectangular highlight over text; move and resize it with Selection. Text remains visible through the marker.
+- **Small-capture sizing:** the editor now reserves room for the full markup toolbar, so tools stay visible instead of moving into the overflow menu.
+- **Silent MP4 recording:** record a region to H.264 `.mp4` with no audio. Animated GIF and audio capture remain planned follow-ups.
 
 The magnifier callout was tried and removed at the user's request.
 
@@ -24,7 +26,7 @@ The magnifier callout was tried and removed at the user's request.
 | Combine two screenshots | Show a comparison or an annotated sequence in one image. | Medium |
 | Scrolling capture | Capture long pages or conversations. Useful, but stitching and app-specific scrolling need substantially more testing. | Large |
 
-Recommendation: solid redaction and constrained drawing next; then choose between OCR and pinning based on actual use. Keep cloud hosting, recording/video editing and a permanent screenshot library out of the immediate scope.
+Recommendation: solid redaction and constrained drawing next; then choose between OCR and pinning based on actual use. Recording is now limited to silent MP4 capture; keep cloud hosting, a full video editor (trimming, transitions) and a permanent screenshot library out of the immediate scope. Animated GIF and audio capture are the two remaining recording follow-ups.
 
 ## Reference products
 
